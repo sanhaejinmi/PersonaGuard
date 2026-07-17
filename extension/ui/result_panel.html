@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>PersonaGuard</title>
+  <link rel="stylesheet" href="result_panel.css">
+  <!-- Tabler Icons: 크롬 익스텐션은 원격 CDN 로드가 CSP로 막힐 수 있어
+       리포지토리에 폰트를 내려받아 로컬 경로로 바꿔서 쓰는 걸 권장합니다. -->
+  <link rel="stylesheet" href="../fonts/tabler-icons.min.css">
+</head>
+<body>
+  <div class="page">
+    <div class="phone">
+      <div class="topbar">
+        <i class="ti ti-arrow-left" id="backBtn" aria-hidden="true"></i>
+        <span id="screenTitle" class="screen-title"></span>
+      </div>
+      <div id="app"></div>
+    </div>
+  </div>
+
+  <script src="checkbox_selector.js"></script>
+  <script src="result_panel.js"></script>
+</body>
+</html>
