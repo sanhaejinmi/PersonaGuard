@@ -27,6 +27,7 @@ function restart(){
   state.codeChoice = null;
   state.healthDecision = null;
   state.codeDecision = null;
+  closeNegotiationDialog();
   render();
 }
 
@@ -239,6 +240,8 @@ function renderSent(){
 
 const topbar = document.querySelector('.topbar');
 
+const renderers = { main: renderMain, risk: renderRisk, detection: renderDetection, rewrite: renderRewrite, sent: renderSent };
+
 function render(){
   const scr = current();
 
@@ -247,9 +250,42 @@ function render(){
   screenTitle.textContent = TITLES[scr];
   backBtn.style.visibility = state.stack.length > 1 ? 'visible' : 'hidden';
 
-  const renderers = { main: renderMain, risk: renderRisk, detection: renderDetection, negotiation: renderNegotiation, rewrite: renderRewrite, sent: renderSent };
   app.innerHTML = renderers[scr]();
   bindEvents(scr);
+}
+
+/* ===== 협상(Negotiation) 팝업(Dialog) ===== */
+const negotiationDialog = document.getElementById('negotiationDialog');
+const negotiationDialogBox = document.getElementById('negotiationDialogBox');
+
+function openNegotiationDialog(){
+  negotiationDialogBox.innerHTML = `
+    <div class="dialog-header">
+      <span class="dialog-title">${TITLES.negotiation}</span>
+      <span class="dialog-close" id="closeNegotiationDialog" aria-label="닫기">&times;</span>
+    </div>
+    ${renderNegotiation()}
+  `;
+  negotiationDialog.classList.remove('hidden');
+  bindNegotiationDialogEvents();
+}
+
+function closeNegotiationDialog(){
+  negotiationDialog.classList.add('hidden');
+}
+
+function bindNegotiationDialogEvents(){
+  document.getElementById('closeNegotiationDialog').onclick = closeNegotiationDialog;
+  document.getElementById('acceptHealth').onclick = () => { state.healthDecision = 'accept'; openNegotiationDialog(); };
+  document.getElementById('keepHealth').onclick = () => { state.healthDecision = 'keep'; openNegotiationDialog(); };
+  document.getElementById('acceptCode').onclick = () => { state.codeDecision = 'accept'; openNegotiationDialog(); };
+  document.getElementById('keepCode').onclick = () => { state.codeDecision = 'keep'; openNegotiationDialog(); };
+  document.getElementById('goRewrite').onclick = () => {
+    if(state.healthDecision && state.codeDecision){
+      closeNegotiationDialog();
+      push('rewrite');
+    }
+  };
 }
 
 function bindEvents(scr){
@@ -262,20 +298,14 @@ function bindEvents(scr){
   } else if(scr === 'detection'){
     CheckboxSelector.bindChoiceRow(app, 'health', (value) => { state.healthChoice = value; render(); });
     CheckboxSelector.bindChoiceRow(app, 'code', (value) => { state.codeChoice = value; render(); });
-    document.getElementById('goNegotiation').onclick = () => push('negotiation');
-  } else if(scr === 'negotiation'){
-    document.getElementById('acceptHealth').onclick = () => { state.healthDecision = 'accept'; render(); };
-    document.getElementById('keepHealth').onclick = () => { state.healthDecision = 'keep'; render(); };
-    document.getElementById('acceptCode').onclick = () => { state.codeDecision = 'accept'; render(); };
-    document.getElementById('keepCode').onclick = () => { state.codeDecision = 'keep'; render(); };
-    const btn = document.getElementById('goRewrite');
-    btn.onclick = () => { if(state.healthDecision && state.codeDecision) push('rewrite'); };
+    document.getElementById('goNegotiation').onclick = () => openNegotiationDialog();
   } else if(scr === 'rewrite'){
-    document.getElementById('backToNegotiation').onclick = () => push('negotiation');
+    document.getElementById('backToNegotiation').onclick = () => { goBack(); openNegotiationDialog(); };
     document.getElementById('goApprove').onclick = () => push('sent');
   } else if(scr === 'sent'){
     document.getElementById('restartBtn').onclick = () => restart();
   }
 }
+
 
 render();
