@@ -1,5 +1,12 @@
 # PersonaGuard
 
 자양강장이 팀의 생성형 AI 프롬프트 개인정보 유출 방지를 위한 탐지·협상·재작성 기반 AI 보안 Agent 프로젝트 파일입니다.
+<<<<<<< Updated upstream
 
+<<<<<<< HEAD
 우리팀 꼭 대상받자~!!
+=======
+제발...
+>>>>>>> bess
+=======
+>>>>>>> Stashed changes
