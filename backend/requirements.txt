@@ -5,3 +5,5 @@ python-dotenv
 pytest
 httpx
 pydantic-settings
+ollama
+exaone3.5:2.4b
