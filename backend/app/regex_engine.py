@@ -24,9 +24,65 @@ def detect_regex(prompt):
     result.extend(detect_business_number(prompt))
     result.extend(detect_passport(prompt))
     result.extend(detect_driver_license(prompt))
-    
 
-    # 위치 기준으로 정렬
-    result.sort(key=lambda x: x["start"])
 
-    return result
+    # =====================================
+    # 중복 Entity 제거
+    # RRN 우선 처리
+    # =====================================
+
+    filtered_result = []
+
+
+    # 긴 범위 우선 정렬
+    result.sort(
+        key=lambda x: (
+            x["start"],
+            -(x["end"] - x["start"])
+        )
+    )
+
+
+    for entity in result:
+
+        overlap = False
+
+
+        for saved in filtered_result:
+
+
+            # entity가 saved 내부에 포함되는 경우
+            if (
+                entity["start"] >= saved["start"]
+                and entity["end"] <= saved["end"]
+            ):
+
+
+                # 주민번호 내부의 사업자번호 제거
+                if (
+                    saved["type"] == "RRN"
+                    and entity["type"] == "BUSINESS_NUMBER"
+                ):
+                    overlap = True
+                    break
+
+
+                # 일반적인 중복 제거
+                overlap = True
+                break
+
+
+
+        if not overlap:
+            filtered_result.append(entity)
+
+
+
+    # 최종 위치 정렬
+
+    filtered_result.sort(
+        key=lambda x: x["start"]
+    )
+
+
+    return filtered_result
