@@ -12,9 +12,11 @@
  */
 
 const SELECTORS = {
-  // ChatGPT
-  'chat.openai.com': 'textarea#prompt-textarea, textarea[data-id="root"]',
-  'chatgpt.com': 'textarea#prompt-textarea, textarea[data-id="root"]',
+  // ChatGPT — #prompt-textarea는 현재 textarea가 아니라 contenteditable div로 렌더링됨
+  // (2026 기준 실측). getInputText/setInputText가 이미 contenteditable을 처리하므로
+  // 태그명을 selector에서 뺐다 — 나중에 다시 textarea로 바뀌어도 그대로 매치된다.
+  'chat.openai.com': '#prompt-textarea, textarea[data-id="root"]',
+  'chatgpt.com': '#prompt-textarea, textarea[data-id="root"]',
   // Claude
   'claude.ai': 'div[contenteditable="true"]'
 };
