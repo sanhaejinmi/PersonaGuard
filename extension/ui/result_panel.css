@@ -70,7 +70,8 @@ button{font-family:inherit;cursor:pointer;}
 .negotiation-actions{display:flex;gap:6px;margin-top:10px;}
 .negotiation-actions button{flex:1;font-size:11px;padding:6px 8px;border-radius:var(--radius);border:0.5px solid var(--border);background:var(--surface-2);color:var(--text-secondary);}
 .negotiation-actions button.accept.active{background:var(--brand);color:#fff;border:none;}
-.negotiation-actions button.keep.active{color:var(--brand);}
+.negotiation-actions button.keep.active{background:#E1F5EE;color:var(--brand);border-color:var(--brand);font-weight:600;}
+.negotiation-actions button:disabled{opacity:0.45;cursor:not-allowed;}
 
 .chip-row{padding:10px 16px 0;display:flex;flex-wrap:wrap;gap:6px;}
 .chip{font-size:10px;background:var(--surface-1);color:var(--text-secondary);padding:3px 8px;border-radius:10px;}
