@@ -27,21 +27,40 @@ PersonaGuard는 사용자가 ChatGPT에 입력하는 프롬프트를 입력 시�
   (`regex_engine.py`) — 전화번호·이메일·주민등록번호·계좌·카드·사업자등록번호·
   여권번호·운전면허번호. `detect_regex(prompt)`는 **평탄한 리스트**
   `[{"type","value","start","end"}, ...]`를 반환한다 (§4.1 참고 — 타입별 dict 아님).
-- Masking Module: 정형 탐지분 치환 (`masking.py::mask_prompt`), EEVE 탐지분 치환
-  (`llm_masking_1.py::mask_text`). 둘 다 **값 문자열 치환**(`str.replace`) 방식이라
-  같은 값이 여러 번 나오면 전부 바뀐다 — pipeline.py가 오프셋 기준 entity 목록도
-  별도로 유지한다.
-- Result Merger + Negotiation: 별도 파일(`merger.py`, `negotiation.py`)이 아직
-  비어 있어서, 현재는 `pipeline.py`가 통합·tier 분류·겹침 정리(§3 ⑤)까지 임시로
-  맡고 있다. 두 모듈이 채워지면 이관을 검토할 것.
+- Policy: 타입별 처리 정책 테이블 (`app/actions/policy.py::POLICY`) — 타입마다
+  `"mask"`(구조화된 부분 마스킹) 또는 `"replace"`(자연스러운 가명 치환) 지정.
+- Masking: 구조화된 부분 마스킹 (`app/actions/masking.py::mask_value(value, type)`).
+  예) RRN → `900101-1*****`. 값 하나만 받아 치환값을 돌려주는 함수라, 텍스트 내
+  위치 치환은 호출하는 쪽(pipeline.py)이 오프셋 기준으로 처리한다.
+- Replace: 자연스러운 가명 치환 (`app/replace/replace_phone.py`,
+  `replace_email.py`, `replace_bank_account.py` — 랜덤 값이라 매 호출 결과가 다름).
+  PERSON/ADDRESS/ORGANIZATION은 랜덤 치환 대신 고정 라벨(`[사용자 이름]` 등)을 쓴다.
+- `app/actions/apply_policy.py::apply_policy(text, regex_entities, llm_entities)`가
+  탐지+정책+치환을 텍스트 전체에 한 번에 적용하는 자체 파이프라인을 갖고 있지만,
+  **사용자의 항목별 결정(decisions)을 반영할 방법이 없다** (텍스트만 받음, 전부
+  일괄 적용). 그래서 `pipeline.py`는 이 함수를 통째로 쓰지 않고, 내부의
+  POLICY/mask_value/replace_* 조합을 항목 단위로 재사용해 사용자 결정을 반영한다
+  (`pipeline.py::_replacement_for()`). `app/ai_pipeline.py`는 이 조합을 CLI로
+  테스트해보는 참고용 스크립트이며 실서비스 경로(`/analyze`, `/rewrite`)에서는
+  쓰지 않는다.
+- Result Merger + Negotiation: 별도 파일이던 `merger.py`(비어 있음)와
+  `negotiation.py`(삭제됨) 대신, 현재 `pipeline.py`가 통합·tier 분류·겹침
+  정리(§3 ⑤)까지 맡고 있다.
 - Session Store: 원본 프롬프트 + tier 포함 엔티티 목록 보관 (In-Memory, 세션 격리 필수, `session_store.py`)
 
 ### AI Layer — EEVE = Ollama 로컬 서빙, 모델 `exaone3.5:2.4b` (§8 확정)
 - 프롬프트 1건당 총 2회 호출 대상 함수가 분리되어 있다:
   - 1차 호출(탐색): `eeve_client.py::detect_llm(masked_text)` — 마스킹된 문장에서
-    PERSON/ADDRESS/ORGANIZATION 탐지 → JSON 출력 (§4.2)
-  - 2차 호출(치환): `replace_client.py::replace_personal_info(text)` — **아직
-    pipeline에서 사용하지 않음**, §3.1 하단 "알려진 제약" 참고.
+    PERSON/ADDRESS/ORGANIZATION 탐지 → JSON 출력, `add_position()`으로 start/end도
+    같이 계산해서 준다 (§4.2) — 단, 그 오프셋은 `masked_text` 기준이라 원본
+    프롬프트 오프셋과 좌표계가 다르다. pipeline.py는 이 오프셋을 쓰지 않고
+    값(text)을 원본 프롬프트에서 재검색한다.
+  - 2차 호출(치환): `app/replace/replace_client.py::replace_personal_info(text, entities)`
+    — 원본 전체를 한 번에 치환하는 방식이라 **아직 pipeline에서 사용하지 않음**,
+    §3.1 하단 "알려진 제약" 참고.
+- **알려진 이슈**: exaone3.5:2.4b가 "제 번호", "주민번호" 같은 일반 명사를 PERSON으로
+  오탐지하는 사례를 확인했다 (실제 이름이 아닌데도 탐지). 프롬프트/few-shot 예시
+  보강이 필요할 수 있음 — AI 담당자 확인 필요.
 
 ### External — ChatGPT (신뢰 경계 밖)
 - 재작성·승인된 프롬프트만 전송된다. 원본은 절대 나가지 않는다.
@@ -69,8 +88,8 @@ PersonaGuard는 사용자가 ChatGPT에 입력하는 프롬프트를 입력 시�
 - `Entity.tier`(int)로 백엔드가 직접 분류해서 내려준다 — Extension은 `entity.tier`가 있으면 그걸 우선 쓰고, 없을 때만 자체 `FORCED_MASK_TYPES` 표로 판단하도록 이미 구현돼 있다 (`extension/approval_sender.js`).
 - Tier 1은 클라이언트가 체크박스를 막는 것과 별개로, **`pipeline.run_rewrite()`가 사용자 결정과 무관하게 항상 마스킹을 강제**한다 (§5 — 클라이언트만 신뢰하지 않는다).
 - 예전에 검토했던 "질문 필수정보(유지 제안)" 4번째 tier는 `eeve_client.detect_llm()`이 PERSON/ADDRESS/ORGANIZATION만 반환하도록 구현되어 있어 **현재는 없음** — 문맥정보는 전부 Tier3로 취급한다. 필요하면 `detect_llm()`의 system prompt와 출력 스키마를 먼저 바꿔야 한다 (§8 미확정).
-- **알려진 제약(재작성 ⑧ 관련)**: `replace_client.py::replace_personal_info(text)`는 원본 전체를 LLM에 보내 가명으로 재작성하지만, 사용자의 항목별 결정(decisions)을 반영할 방법이 없다(함수가 텍스트만 받음). 그래서 `pipeline.run_rewrite()`는 이 함수를 쓰지 않고, 확정 항목만 `[TYPE]` placeholder로 결정론적으로 치환한다. `replace_client.py`를 실제로 쓰려면 항목별 선택을 반영하도록 인터페이스가 먼저 바뀌어야 한다 — 별도 논의 필요.
-- **알려진 버그**: `regex/business_number.py`의 패턴에 단어 경계(`\b`)가 없어서 주민등록번호 안의 일부 문자열이 BUSINESS_NUMBER로 같이 잡힌다. `regex/bank_account.py`의 일반 계좌번호 패턴도 전화번호와 겹칠 수 있다. `pipeline.py`가 겹치는 span을 정리(더 넓은 span 우선)해서 화면에 중복 표시되거나 치환이 깨지는 건 막아뒀지만, 패턴 자체는 정규식 담당자가 word boundary를 추가하는 등으로 고쳐야 한다.
+- **알려진 제약(재작성 ⑧ 관련)**: `apply_policy()`/`replace_client.py::replace_personal_info()`는 원본 전체를 한 번에 처리해서 사용자의 항목별 결정(decisions)을 반영할 방법이 없다. 그래서 `pipeline.run_rewrite()`는 이 함수들을 통째로 쓰지 않고, 같은 POLICY/mask_value/replace_*를 항목 단위로 재사용해(`_replacement_for()`) 확정 항목만 치환하고 미선택 항목은 원문을 유지한다.
+- **패턴 겹침 수정됨**: `regex/business_number.py`의 패턴에 단어 경계(`\b`)가 없어서 주민등록번호 안의 일부 문자열이 BUSINESS_NUMBER로 같이 잡히던 문제를, 정규식 담당자가 `regex_engine.py::detect_regex()` 자체에 겹침 정리 로직(더 넓은 span 우선, RRN 우선 처리)을 넣어 해결했다. `pipeline.py`는 그 위에 regex 탐지분과 LLM 탐지분 **사이**에 생길 수 있는 겹침까지 한 번 더 정리한다 (`_dedupe_overlaps()`). 단, `business_number.py`/`bank_account.py`의 패턴 자체(단어 경계 없음)는 아직 그대로라 — 다른 상황에서 또 겹칠 수 있으니 새 패턴 추가 시 계속 확인할 것.
 
 ## 4. 데이터 계약
 
@@ -86,21 +105,25 @@ PersonaGuard는 사용자가 ChatGPT에 입력하는 프롬프트를 입력 시�
 ### 4.2 EEVE 탐색 출력 (실제 구현)
 ```json
 {
-  "PERSON": [{ "text": "김철수" }],
-  "ADDRESS": [{ "text": "서울특별시 강남구" }],
-  "ORGANIZATION": [{ "text": "성신여자대학교" }]
+  "PERSON": [{ "text": "김철수", "start": 3, "end": 6 }],
+  "ADDRESS": [{ "text": "서울특별시 강남구", "start": 10, "end": 19 }],
+  "ORGANIZATION": [{ "text": "성신여자대학교", "start": 22, "end": 29 }]
 }
 ```
-`eeve_client.py::detect_llm(masked_text)`가 이 형태로 반환한다. 오프셋(start/end)을
-주지 않으므로, pipeline.py가 원본 프롬프트에서 값을 재검색해 위치를 구한다.
+`eeve_client.py::detect_llm(masked_text)`가 이 형태로 반환한다. `start`/`end`는
+`add_position()`이 계산해서 붙여주지만, 이건 **detect_llm에 넘긴 텍스트(마스킹본)
+기준** 오프셋이라 원본 프롬프트 오프셋과 좌표계가 다르다 — pipeline.py는 이
+오프셋을 쓰지 않고 원본 프롬프트에서 값(text)을 재검색해 위치를 구한다.
 값이 여러 번 등장하면 전부 별도 항목으로 잡는다 (마스킹 누락 방지 우선).
 
 ### 4.3 통합 Detection Result
 - 4.1 + 4.2를 오프셋 기준으로 병합하고, 겹치는 span은 정리한다(§3.1 "알려진 버그" 참고).
 - 최종적으로 `Entity(type, value, start, end, tier)` 리스트가 되어 `AnalyzeResponse.entities`로 나간다.
 - `AnalyzeResponse.candidates`는 `entities`와 **동일 인덱스로 매칭되는 치환 미리보기 문자열**
-  리스트다 (예: `entities[i]`가 PHONE이면 `candidates[i]`는 `"[PHONE]"`). 후보 3개 선택 방식이
-  아니라, Extension 협상 화면에서 항목별 "AI 제안"을 보여주기 위한 용도다.
+  리스트다 — POLICY 기준 실제 치환값이 들어간다 (예: PHONE이면 `"010-4223-6965"`
+  같은 가명, PERSON이면 `"[사용자 이름]"`). 후보 3개 선택 방식이 아니라, Extension
+  협상 화면에서 항목별 "AI 제안"을 보여주기 위한 용도다. PHONE/EMAIL/BANK_ACCOUNT
+  치환은 랜덤이라 `/analyze`를 다시 호출하면 값이 바뀐다.
 
 ### 4.4 오프셋 규칙 (중요)
 - start/end는 **Python 기준 유니코드 코드포인트 인덱스**로 통일한다.
@@ -131,8 +154,9 @@ PersonaGuard는 사용자가 ChatGPT에 입력하는 프롬프트를 입력 시�
 - 주민등록번호: 2020.10 이후 발급분은 뒷자리 무작위 → 구식 체크섬 검증 넣지 말 것 (날짜 유효성만).
   `rrn.py`/`business_number.py`에 체크섬 검증 함수가 있지만 실제 탐지에는 사용하지 않음 — 유지.
 - **패턴 겹침 주의**: `business_number.py` 패턴에 단어 경계가 없어 RRN 안의 부분 문자열이
-  BUSINESS_NUMBER로 같이 잡히는 버그가 있다 (§3.1 참고). 새 패턴 추가 시 기존 패턴과의
-  겹침을 반드시 함께 확인할 것 — pipeline.py의 겹침 정리 로직은 증상 완화일 뿐 근본 수정이 아니다.
+  BUSINESS_NUMBER로 같이 잡히던 문제는 `detect_regex()`의 자체 겹침 정리 로직(RRN 우선
+  처리)으로 해결됨 (§3.1). 다만 패턴 자체는 여전히 느슨해서, 새 패턴 추가 시 기존
+  패턴과의 겹침을 반드시 함께 확인할 것.
 - 모든 패턴은 `backend/tests/`의 골든 테스트셋(잡혀야 할 예시 / 잡히면 안 되는 예시)과 함께 추가한다.
 
 ## 7. 코딩 컨벤션
@@ -156,12 +180,14 @@ PersonaGuard는 사용자가 ChatGPT에 입력하는 프롬프트를 입력 시�
 ### 미확정 (구현 전 팀 확인 필요 — 임의로 구현하지 말 것)
 - 자기검증 루프(재작성본 재탐지) 포함 여부와 재시도 횟수
 - Session Store의 TTL·용량 정책
-- 재작성 결과 표기 방식 (placeholder 유지 vs 가명 대체값) — `replace_client.py`가 가명
-  대체값 방식으로 만들어져 있지만, 사용자의 항목별 결정을 반영 못 해서 아직 pipeline에서는
-  미사용. 이 함수를 실제로 쓰려면 인터페이스를 바꿔야 함 (§3.1 알려진 제약)
+- 재작성 결과 표기 방식 — Tier1/2는 `POLICY`(mask/replace)로 정해졌지만(§2), PERSON/
+  ADDRESS/ORGANIZATION은 자연스러운 가명이 아니라 고정 라벨(`[사용자 이름]` 등)이라
+  완전한 "가명 대체값" 방식은 아직 아님. LLM이 실제 이름을 생성하게 할지는 미확정.
 - "질문 필수정보(유지 제안)" tier를 추가할지 — 추가하려면 `eeve_client.py::detect_llm()`의
   system prompt와 출력 스키마부터 바꿔야 함
-- `regex/business_number.py`, `regex/bank_account.py` 패턴 겹침 버그 수정 (§6)
+- `regex/business_number.py`, `regex/bank_account.py` 패턴 자체의 word boundary 보강
+  (겹침 증상은 `detect_regex()` 후처리로 해결됐지만 패턴 근본 수정은 아직, §6)
+- `eeve_client.py`의 PERSON 오탐지("제 번호", "주민번호" 같은 일반 명사를 이름으로 탐지) 개선
 
 ## 9. Claude Code 작업 지침
 
