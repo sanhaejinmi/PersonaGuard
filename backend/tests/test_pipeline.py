@@ -10,12 +10,14 @@ patch한다 — pipeline의 조율 로직(오프셋 병합·tier 분류·세션�
 """
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from app import pipeline, session_store
+from app.actions.masking import mask_value
 
 FIXTURES = Path(__file__).parent / "fixtures" / "golden_cases.json"
 
@@ -74,7 +76,7 @@ def test_run_rewrite_forces_tier1_mask_even_if_user_unchecks():
     rewritten = pipeline.run_rewrite(session_id, decisions)
 
     assert "900101-1234567" not in rewritten
-    assert "[RRN]" in rewritten
+    assert mask_value("900101-1234567", "RRN") in rewritten
 
 
 def test_run_rewrite_respects_user_decision_for_tier3():
@@ -109,8 +111,10 @@ def test_run_rewrite_can_be_called_repeatedly_for_same_session():
     entity = result.entities[0]
     key = f"{entity.type}:{entity.start}:{entity.end}"
 
+    # replace_phone()은 랜덤 치환이라 정확한 문자열 대신 형식만 확인한다 (010-XXXX-XXXX).
     first = pipeline.run_rewrite(session_id, {key: True})
-    assert "[PHONE]" in first
+    assert "010-1234-5678" not in first
+    assert re.search(r"010-\d{4}-\d{4}", first)
     assert session_store.get(session_id) is not None  # 세션이 살아있어야 재호출 가능
 
     second = pipeline.run_rewrite(session_id, {key: False})
