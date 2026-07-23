@@ -21,7 +21,7 @@ const STORAGE_KEY_LATEST_ANALYSIS = 'personaguard:latestAnalysis';
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.type) {
     case 'ANALYZE_PROMPT':
-      handleAnalyzePrompt(message.payload, sendResponse);
+      handleAnalyzePrompt(message.payload, sender, sendResponse);
       return true; // 비동기 응답을 위해 true 반환 (Chrome 확장 필수 규칙)
 
     case 'REQUEST_REWRITE':
@@ -55,7 +55,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
  * content_script가 페이지에서 캡처한 프롬프트를 백엔드(/analyze)로 보낸다.
  * 응답 형태: { original, masked, entities: [{type,value,start,end}], candidates: [] }
  */
-async function handleAnalyzePrompt(payload, sendResponse) {
+async function handleAnalyzePrompt(payload, sender, sendResponse) {
   try {
     const res = await fetch(`${API_BASE_URL}/analyze`, {
       method: 'POST',
@@ -69,10 +69,12 @@ async function handleAnalyzePrompt(payload, sendResponse) {
 
     const analysis = await res.json(); // { original, masked, entities, candidates }
 
+    // content_script.js는 자기 tabId를 모르므로, background가 sender.tab.id로 받아서 저장한다.
+    // 이게 없으면 나중에 FILL_REWRITTEN_TEXT를 어느 탭에 보낼지 알 수 없다.
     await chrome.storage.local.set({
       [STORAGE_KEY_LATEST_ANALYSIS]: {
         analyzedAt: Date.now(),
-        tabId: payload.tabId ?? null,
+        tabId: sender.tab?.id ?? null,
         ...analysis
       }
     });

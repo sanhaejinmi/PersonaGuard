@@ -1,0 +1,86 @@
+[
+  {
+    "name": "regex_tier1_tier2_only",
+    "prompt": "제 이메일은 kim@example.com이고 전화번호는 010-1234-5678, 주민번호는 900101-1234567입니다",
+    "llm_raw": {
+      "PERSON": [],
+      "ADDRESS": [],
+      "ORGANIZATION": []
+    },
+    "expected_types": [
+      "EMAIL",
+      "PHONE",
+      "RRN"
+    ],
+    "expected_tiers": {
+      "EMAIL": 2,
+      "PHONE": 2,
+      "RRN": 1
+    }
+  },
+  {
+    "name": "llm_tier3_person_address",
+    "prompt": "이민수입니다. 부산광역시 해운대구에 살아요",
+    "llm_raw": {
+      "PERSON": [
+        {
+          "text": "이민수"
+        }
+      ],
+      "ADDRESS": [
+        {
+          "text": "부산광역시 해운대구"
+        }
+      ],
+      "ORGANIZATION": []
+    },
+    "expected_types": [
+      "PERSON",
+      "ADDRESS"
+    ],
+    "expected_tiers": {
+      "PERSON": 3,
+      "ADDRESS": 3
+    }
+  },
+  {
+    "name": "llm_tier3_organization",
+    "prompt": "저는 카카오에 다닙니다",
+    "llm_raw": {
+      "PERSON": [],
+      "ADDRESS": [],
+      "ORGANIZATION": [
+        {
+          "text": "카카오"
+        }
+      ]
+    },
+    "expected_types": [
+      "ORGANIZATION"
+    ],
+    "expected_tiers": {
+      "ORGANIZATION": 3
+    }
+  },
+  {
+    "name": "mixed_regex_and_llm",
+    "prompt": "저는 이민수이고 번호는 010-1234-5678입니다",
+    "llm_raw": {
+      "PERSON": [
+        {
+          "text": "이민수"
+        }
+      ],
+      "ADDRESS": [],
+      "ORGANIZATION": []
+    },
+    "expected_types": [
+      "PHONE",
+      "PERSON"
+    ],
+    "expected_tiers": {
+      "PHONE": 2,
+      "PERSON": 3
+    }
+  }
+]
