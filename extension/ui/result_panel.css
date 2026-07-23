@@ -70,7 +70,8 @@ button{font-family:inherit;cursor:pointer;}
 .negotiation-actions{display:flex;gap:6px;margin-top:10px;}
 .negotiation-actions button{flex:1;font-size:11px;padding:6px 8px;border-radius:var(--radius);border:0.5px solid var(--border);background:var(--surface-2);color:var(--text-secondary);}
 .negotiation-actions button.accept.active{background:var(--brand);color:#fff;border:none;}
-.negotiation-actions button.keep.active{color:var(--brand);}
+.negotiation-actions button.keep.active{background:#E1F5EE;color:var(--brand);border-color:var(--brand);font-weight:600;}
+.negotiation-actions button:disabled{opacity:0.45;cursor:not-allowed;}
 
 .chip-row{padding:10px 16px 0;display:flex;flex-wrap:wrap;gap:6px;}
 .chip{font-size:10px;background:var(--surface-1);color:var(--text-secondary);padding:3px 8px;border-radius:10px;}
@@ -117,3 +118,26 @@ mark.pii-new{background:#5DCAA5;color:#04342C;padding:0 2px;border-radius:3px;}
 .stat-label{font-size:10px;color:var(--text-muted);margin:2px 0 0;}
 
 .main-cta{padding:14px 16px 16px;}
+
+/* ===== negotiation dialog (모달) ===== */
+.dialog-overlay{
+  position:absolute; inset:0; background:rgba(26,26,24,0.45);
+  display:flex; align-items:flex-end; justify-content:center; z-index:20;
+}
+.dialog-overlay.hidden{display:none;}
+.dialog-box{
+  width:100%; max-height:88%; overflow-y:auto;
+  background:var(--surface-2); border-radius:16px 16px 0 0;
+  box-shadow:0 -8px 24px rgba(0,0,0,0.15);
+  animation:dialog-slide-up .18s ease-out;
+}
+@keyframes dialog-slide-up{
+  from{ transform:translateY(24px); opacity:0; }
+  to{ transform:translateY(0); opacity:1; }
+}
+.dialog-header{
+  display:flex; align-items:center; justify-content:space-between;
+  padding:14px 16px; border-bottom:0.5px solid var(--border); position:sticky; top:0; background:var(--surface-2);
+}
+.dialog-title{font-size:14px; font-weight:600; color:var(--text-primary);}
+.dialog-close{font-size:18px; color:var(--text-muted); cursor:pointer; line-height:1;}
