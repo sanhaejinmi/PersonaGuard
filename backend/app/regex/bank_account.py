@@ -1,6 +1,8 @@
 import re
 
+
 BANK_PATTERNS = {
+
     "국민은행": r"\d{3,6}-\d{2}-\d{6}",
     "신한은행": r"\d{3}-\d{2}-\d{6}",
     "우리은행": r"\d{3}-\d{4}-\d{6}",
@@ -29,5 +31,21 @@ def detect_bank_account(prompt):
                     "end": match.end(1),
                 }
             )
+
+    generic_pattern = r"(?<!\d)\d{3,6}-\d{2,4}-\d{4,7}(?!\d)"
+
+    for match in re.finditer(generic_pattern, prompt):
+
+        if any(item["start"] == match.start() for item in result):
+            continue
+
+        result.append(
+            {
+                "type": "BANK_ACCOUNT",
+                "value": match.group(),
+                "start": match.start(),
+                "end": match.end(),
+            }
+        )
 
     return result
