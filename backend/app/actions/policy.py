@@ -1,35 +1,25 @@
 POLICY = {
 
-
-    # Regex 개인정보
-
-    "PHONE": "replace",
-
-    "EMAIL": "replace",
+    # ==========================
+    # Regex 기반
+    # ==========================
 
     "RRN": "mask",
-
-    "CARD": "mask",
-
-    "BANK_ACCOUNT": "replace",
-
-
-    "BUSINESS_NUMBER": "mask",
-
-    "PASSPORT": "mask",
-
+    "PHONE": "mask",
     "DRIVER_LICENSE": "mask",
-
+    "BANK_ACCOUNT": "mask",
+    "CARD": "mask",
+    "PASSPORT": "mask",
     "FOREIGNER_REGISTRATION": "mask",
 
+    "EMAIL": "replace",
+    "BUSINESS_NUMBER": "mask",
 
+    # ==========================
+    # LLM 기반
+    # ==========================
 
-    # LLM 개인정보
-
-    "PERSON": "replace",
-
+    "PERSON": "mask",
     "ADDRESS": "replace",
-
     "ORGANIZATION": "replace",
-
 }
