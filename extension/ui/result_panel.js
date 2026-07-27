@@ -218,10 +218,9 @@ function renderDetection(){
     return `
       <div class="detect-item">
         <div class="detect-head-left" style="display:flex;align-items:center;gap:8px;">
-          <span class="dot" style="background:#BA7517;"></span><span class="detect-label">${entity.type}</span><span class="badge warn">선택 필요</span>
+          <span class="dot" style="background:#BA7517;"></span><span class="detect-label">${entity.type}</span>
         </div>
         <p class="detect-quote">"${entity.value}"</p>
-        ${CheckboxSelector.renderChoiceRow(String(idx), isMasked ? 'mask' : 'keep')}
       </div>
     `;
   }).join('');
@@ -233,7 +232,7 @@ function renderDetection(){
     </div>
     <div style="padding:12px 16px 16px;">
       <p class="muted" style="margin:0 0 8px;">총 ${entities.length}건 감지 · 마스킹 ${maskedCount}건 · 원본유지 ${keptCount}건</p>
-      <button class="btn-primary" id="goNegotiation" ${entities.length === 0 ? 'disabled' : ''}>선택 적용하고 전송</button>
+      <button class="btn-primary" id="goNegotiation" ${entities.length === 0 ? 'disabled' : ''}>다음</button>
     </div>
   `;
 }
