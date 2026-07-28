@@ -23,7 +23,7 @@ import uuid
 from app import session_store
 from app.actions.masking import mask_value
 from app.actions.policy import POLICY
-from app.eeve_client import detect_llm
+from app.exaone_client import detect_llm
 from app.regex_engine import detect_regex
 from app.replace.replace_bank_account import replace_account
 from app.replace.replace_email import replace_email
