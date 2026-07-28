@@ -2,7 +2,7 @@
 pipeline.py 단위 테스트.
 
 app.regex_engine.detect_regex는 실제(순수 정규식, 외부 의존성 없음) 그대로 돌린다.
-app.eeve_client.detect_llm은 로컬 Ollama를 실제로 호출하므로, CI/다른 팀원 환경에
+app.exaone_client.detect_llm은 로컬 Ollama를 실제로 호출하므로, CI/다른 팀원 환경에
 모델이 없어도 테스트가 돌아가도록 golden_cases.json에 미리 준비한 값으로
 patch한다 — pipeline의 조율 로직(오프셋 병합·tier 분류·세션·rewrite 강제)만
 검증하는 게 목적이다. 실제 Ollama 연동 자체를 확인하려면 이 파일이 아니라
