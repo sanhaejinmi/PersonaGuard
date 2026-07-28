@@ -10,7 +10,6 @@ patch한다 — pipeline의 조율 로직(오프셋 병합·tier 분류·세션�
 """
 
 import json
-import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -111,10 +110,10 @@ def test_run_rewrite_can_be_called_repeatedly_for_same_session():
     entity = result.entities[0]
     key = f"{entity.type}:{entity.start}:{entity.end}"
 
-    # replace_phone()은 랜덤 치환이라 정확한 문자열 대신 형식만 확인한다 (010-XXXX-XXXX).
+    # PHONE은 POLICY상 "mask"라 mask_value()의 결정론적 부분 마스킹을 거친다.
     first = pipeline.run_rewrite(session_id, {key: True})
     assert "010-1234-5678" not in first
-    assert re.search(r"010-\d{4}-\d{4}", first)
+    assert mask_value("010-1234-5678", "PHONE") in first
     assert session_store.get(session_id) is not None  # 세션이 살아있어야 재호출 가능
 
     second = pipeline.run_rewrite(session_id, {key: False})
