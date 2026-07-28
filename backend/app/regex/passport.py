@@ -2,11 +2,8 @@ import re
 
 
 def detect_passport(prompt):
-    """
-    여권번호 탐지
-    """
 
-    passport_pattern = r"\b[A-Z][0-9]{8}\b"
+    passport_pattern = r"(?<![A-Za-z0-9])[A-Z][0-9]{8}(?![A-Za-z0-9])"
 
     result = []
 

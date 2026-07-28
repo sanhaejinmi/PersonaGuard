@@ -6,7 +6,11 @@ from app.regex.card import detect_card
 from app.regex.business_number import detect_business_number
 from app.regex.passport import detect_passport
 from app.regex.driver_license import detect_driver_license
+from app.regex.foreigner_registration import detect_foreigner_registration
 
+
+def _is_overlapping(a, b):
+    return a["start"] < b["end"] and a["end"] > b["start"]
 
 
 def detect_regex(prompt):
@@ -24,17 +28,10 @@ def detect_regex(prompt):
     result.extend(detect_business_number(prompt))
     result.extend(detect_passport(prompt))
     result.extend(detect_driver_license(prompt))
-
-
-    # =====================================
-    # 중복 Entity 제거
-    # RRN 우선 처리
-    # =====================================
+    result.extend(detect_foreigner_registration(prompt))
 
     filtered_result = []
 
-
-    # 긴 범위 우선 정렬
     result.sort(
         key=lambda x: (
             x["start"],
@@ -42,47 +39,19 @@ def detect_regex(prompt):
         )
     )
 
-
     for entity in result:
 
         overlap = False
 
-
         for saved in filtered_result:
 
-
-            # entity가 saved 내부에 포함되는 경우
-            if (
-                entity["start"] >= saved["start"]
-                and entity["end"] <= saved["end"]
-            ):
-
-
-                # 주민번호 내부의 사업자번호 제거
-                if (
-                    saved["type"] == "RRN"
-                    and entity["type"] == "BUSINESS_NUMBER"
-                ):
-                    overlap = True
-                    break
-
-
-                # 일반적인 중복 제거
+            if _is_overlapping(entity, saved):
                 overlap = True
                 break
-
-
 
         if not overlap:
             filtered_result.append(entity)
 
-
-
-    # 최종 위치 정렬
-
-    filtered_result.sort(
-        key=lambda x: x["start"]
-    )
-
+    filtered_result.sort(key=lambda x: x["start"])
 
     return filtered_result
