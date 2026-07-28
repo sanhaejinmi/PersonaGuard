@@ -1,9 +1,14 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app import pipeline
-from app.schemas import AnalyzeRequest, AnalyzeResponse, RewriteRequest, RewriteResponse
+from app.schemas import (
+    AnalyzeRequest,
+    AnalyzeResponse,
+    RewriteRequest,
+    RewriteResponse,
+)
 from app.config import settings
+from app.pipeline import run_analysis, run_rewrite
 
 app = FastAPI(
     title="PersonaGuard API",
@@ -36,6 +41,12 @@ def health():
     }
 
 
+# 현재는 임시 서비스 함수
+# 나중에 내부를 pipeline.py 호출로 변경하면 됨
+def analyze_service(prompt: str) -> AnalyzeResponse:
+    return run_analysis(prompt)
+
+
 @app.post(
     "/analyze",
     response_model=AnalyzeResponse,
@@ -51,29 +62,30 @@ def analyze(req: AnalyzeRequest):
             detail="Prompt must not be empty."
         )
 
-    try:
-        return pipeline.run_analysis(req.prompt)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
+    return analyze_service(req.prompt)
 
 @app.post(
     "/rewrite",
     response_model=RewriteResponse,
     summary="Rewrite prompt",
-    description="Apply the user's confirmed masking decisions and return the purpose-preserving rewritten prompt."
+    description="Apply the user's masking decisions and return the rewritten prompt."
 )
 def rewrite(req: RewriteRequest):
 
-    if not req.session_id.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="session_id must not be empty."
+    try:
+        from app.pipeline import run_rewrite
+
+        rewritten = run_rewrite(
+            req.session_id,
+            req.decisions
         )
 
-    try:
-        rewritten = pipeline.run_rewrite(req.session_id, req.decisions)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Session not found or expired.")
+        return RewriteResponse(
+            rewritten=rewritten
+        )
 
-    return RewriteResponse(rewritten=rewritten)
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail="Session not found."
+        )  
