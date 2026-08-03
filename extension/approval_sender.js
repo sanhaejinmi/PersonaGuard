@@ -50,7 +50,9 @@ const ApprovalSender = (function () {
 
     entities.forEach((entity, idx) => {
       const key = `${entity.type}:${entity.start}:${entity.end}`;
-      let protect = userChoices[String(idx)] ?? true; // 기본값: 보호(true)
+      // 기본값: entity.default_masked(백엔드가 목적 필요성 판단 등으로 제안한 값).
+      // 없으면(구버전 분석 결과 등) 보호(true)로 안전하게 fallback.
+      let protect = userChoices[String(idx)] ?? entity.default_masked ?? true;
 
       if (isForcedMask(entity) && protect === false) {
         protect = true; // 고유식별정보는 원문 유지 선택 불가 → 강제 보호
