@@ -158,10 +158,23 @@ def _dedupe_overlaps(items: list[dict]) -> list[dict]:
     return sorted(accepted, key=lambda e: e["start"])
 
 
-def _apply_replacements(text: str, items: list[dict]) -> str:
-    """§4.4 — 오프셋 역순으로 치환."""
+def _apply_replacements(
+    text: str, items: list[dict], custom_values: dict[str, str] | None = None
+) -> str:
+    """§4.4 — 오프셋 역순으로 치환.
+
+    custom_values가 있으면(Extension "직접 수정" 기능) 해당 항목은 POLICY 기반
+    기본 치환 대신 사용자가 입력한 값을 쓴다. 단 Tier1(고유식별정보)은 §5 불변조건상
+    사용자 결정과 무관하게 항상 강제 마스킹해야 하므로 custom_values를 무시한다.
+    """
+    custom_values = custom_values or {}
     for e in sorted(items, key=lambda e: e["start"], reverse=True):
-        text = text[: e["start"]] + _replacement_for(e["type"], e["value"]) + text[e["end"] :]
+        key = f"{e['type']}:{e['start']}:{e['end']}"
+        if e["tier"] != 1 and key in custom_values:
+            replacement = custom_values[key]
+        else:
+            replacement = _replacement_for(e["type"], e["value"])
+        text = text[: e["start"]] + replacement + text[e["end"] :]
     return text
 
 
@@ -245,12 +258,20 @@ def run_analysis(prompt: str) -> AnalyzeResponse:
     )
 
 
-def run_rewrite(session_id: str, decisions: dict[str, bool]) -> str:
+def run_rewrite(
+    session_id: str,
+    decisions: dict[str, bool],
+    custom_values: dict[str, str] | None = None,
+) -> str:
     """
     ⑧ 재작성. decisions 키는 "TYPE:start:end" (Extension approval_sender.js와 동일 규약).
     미언급 항목은 run_analysis()가 계산해둔 AI 기본 제안(entity.default_masked)을
     따른다 — 사용자가 체크박스를 명시적으로 건드리지 않은 항목은 AI 판단이 곧
     기본값이라는 뜻이다.
+
+    custom_values(선택, 같은 "TYPE:start:end" 키)가 있으면 그 항목은 POLICY 기반
+    기본 치환 대신 사용자가 직접 입력한 텍스트로 치환한다(Extension "직접 수정" 기능).
+    Tier1은 _apply_replacements()가 custom_values를 무시하고 항상 강제 마스킹한다.
 
     Tier1(고유식별정보)은 decisions에 뭐라고 오든 항상 보호한다 — Extension도
     동일하게 강제하지만, 서버도 이중으로 강제한다 (§5 — 클라이언트만 신뢰하지 않는다).
@@ -274,7 +295,7 @@ def run_rewrite(session_id: str, decisions: dict[str, bool]) -> str:
         e for e in items if e["tier"] == 1 or decisions.get(_key(e), e["default_masked"])
     ]
 
-    masked_text = _apply_replacements(session["original"], to_protect)
+    masked_text = _apply_replacements(session["original"], to_protect, custom_values)
 
     rewritten = polish_with_llm(masked_text)
     if self_check_rewrite(rewritten) is not None:
