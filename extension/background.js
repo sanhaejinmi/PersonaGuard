@@ -69,6 +69,12 @@ async function handleAnalyzePrompt(payload, sender, sendResponse) {
 
     const analysis = await res.json(); // { original, masked, entities, candidates }
 
+    // 민감정보가 없으면 저장하지 않음
+    if (!Array.isArray(analysis.entities) || analysis.entities.length === 0) {
+      sendResponse({ ok: true, data: analysis });
+      return;
+    }
+
     // content_script.js는 자기 tabId를 모르므로, background가 sender.tab.id로 받아서 저장한다.
     // 이게 없으면 나중에 FILL_REWRITTEN_TEXT를 어느 탭에 보낼지 알 수 없다.
     await chrome.storage.local.set({
@@ -79,10 +85,13 @@ async function handleAnalyzePrompt(payload, sender, sendResponse) {
       }
     });
 
-    // 뱃지에 감지 건수 표시 (선택 사항, UX 개선)
-    if (Array.isArray(analysis.entities)) {
+    // 뱃지에 감지 건수 표시 (민감정보가 있을 때만)
+    if (Array.isArray(analysis.entities) && analysis.entities.length > 0) {
       chrome.action.setBadgeText({ text: String(analysis.entities.length) });
       chrome.action.setBadgeBackgroundColor({ color: '#0F6E56' });
+    } else {
+      // 민감정보가 없으면 배지 제거
+      chrome.action.setBadgeText({ text: '' });
     }
 
     sendResponse({ ok: true, data: analysis });
