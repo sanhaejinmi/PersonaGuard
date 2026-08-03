@@ -107,7 +107,8 @@ async function handleAnalyzePrompt(payload, sender, sendResponse) {
  * 백엔드(/rewrite)에 session_id + decisions를 보내 최종 재작성된 텍스트를 받고,
  * 그 텍스트를 content_script로 전달해 페이지 입력창에 채워 넣게 함.
  *
- * 요청 형태: { session_id: string, decisions: { "TYPE:start:end": true|false } }
+ * 요청 형태: { session_id: string, decisions: { "TYPE:start:end": true|false },
+ *              custom_values: { "TYPE:start:end": string } }
  * 응답 형태: 백엔드 team 확정 전이라 { rewritten: string } 정도로 가정. 실제 필드명 확인 필요.
  */
 async function handleRequestRewrite(payload, sendResponse) {
@@ -117,7 +118,8 @@ async function handleRequestRewrite(payload, sendResponse) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         session_id: payload.sessionId,
-        decisions: payload.decisions
+        decisions: payload.decisions,
+        custom_values: payload.customValues ?? {}
       })
     });
 
