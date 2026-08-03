@@ -81,19 +81,29 @@ document.addEventListener(
 );
 
 function requestAnalysis(text) {
-  chrome.runtime.sendMessage(
-    { type: 'ANALYZE_PROMPT', payload: { text } },
-    (response) => {
-      if (!response || !response.ok) {
-        console.error('[PersonaGuard] 분석 요청 실패', response?.error);
-        return;
-      }
-      // 분석이 끝나면 사용자가 툴바 아이콘을 눌러 팝업에서 검토하도록 안내
-      // (필요시 여기서 chrome.action.openPopup() 같은 API로 자동 오픈 시도 가능,
-      //  단 MV3에서는 사용자 제스처 없이 자동으로 팝업을 열 수 없음)
-      showReviewBadgeHint();
+  // 보호 끄기 상태 확인
+  chrome.storage.local.get('personaguard:protection_enabled', (result) => {
+    const isEnabled = result['personaguard:protection_enabled'] !== false;
+    if (!isEnabled) {
+      // 보호가 꺼져있으면 분석하지 않음
+      return;
     }
-  );
+
+    chrome.runtime.sendMessage(
+      { type: 'ANALYZE_PROMPT', payload: { text } },
+      (response) => {
+        if (!response || !response.ok) {
+          console.error('[PersonaGuard] 분석 요청 실패', response?.error);
+          return;
+        }
+        // 민감정보가 감지되면 안내 메시지 표시
+        const entities = response?.data?.entities ?? [];
+        if (entities.length > 0) {
+          showReviewBadgeHint();
+        }
+      }
+    );
+  });
 }
 
 function showReviewBadgeHint() {
