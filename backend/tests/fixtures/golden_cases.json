@@ -20,7 +20,7 @@
   },
   {
     "name": "llm_tier3_person_address",
-    "prompt": "이민수입니다. 부산광역시 해운대구에 살아요",
+    "prompt": "이민수입니다. 부산광역시 해운대구 우동 123에 살아요",
     "llm_raw": {
       "PERSON": [
         {
@@ -29,7 +29,7 @@
       ],
       "ADDRESS": [
         {
-          "text": "부산광역시 해운대구"
+          "text": "부산광역시 해운대구 우동 123"
         }
       ],
       "ORGANIZATION": []

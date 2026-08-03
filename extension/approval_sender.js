@@ -23,7 +23,10 @@
  *   const decisions = ApprovalSender.buildDecisions(analysis.entities, {
  *     '0': true, '1': false   // key: entities 배열의 index
  *   });
- *   const res = await ApprovalSender.requestRewrite(analysis.sessionId, decisions, analysis.tabId);
+ *   const customValues = ApprovalSender.buildCustomValues(analysis.entities, {
+ *     '1': '사용자가 직접 입력한 대체 텍스트'   // "직접 수정" 기능, 선택
+ *   });
+ *   const res = await ApprovalSender.requestRewrite(analysis.sessionId, decisions, analysis.tabId, customValues);
  *   // res.data 안에 최종 재작성 텍스트가 들어있음 (필드명은 백엔드 확정 후 조정 필요)
  */
 
@@ -50,7 +53,9 @@ const ApprovalSender = (function () {
 
     entities.forEach((entity, idx) => {
       const key = `${entity.type}:${entity.start}:${entity.end}`;
-      let protect = userChoices[String(idx)] ?? true; // 기본값: 보호(true)
+      // 기본값: entity.default_masked(백엔드가 목적 필요성 판단 등으로 제안한 값).
+      // 없으면(구버전 분석 결과 등) 보호(true)로 안전하게 fallback.
+      let protect = userChoices[String(idx)] ?? entity.default_masked ?? true;
 
       if (isForcedMask(entity) && protect === false) {
         protect = true; // 고유식별정보는 원문 유지 선택 불가 → 강제 보호
@@ -71,15 +76,41 @@ const ApprovalSender = (function () {
   }
 
   /**
+   * entities + 사용자가 "직접 수정"으로 입력한 항목별 대체 텍스트를 백엔드가 요구하는
+   * custom_values 딕셔너리로 변환. 고유식별정보(Tier1)는 서버가 어차피 무시하지만,
+   * 프론트에서도 애초에 보내지 않도록 방어한다.
+   *
+   * @param {Array<{type:string, start:number, end:number, tier?:number}>} entities
+   * @param {Object<string, string>} customEntityValues - key: entities 배열의 index, value: 사용자가 입력한 텍스트
+   * @returns {Object<string, string>} - key: "TYPE:start:end", value: 대체 텍스트
+   */
+  function buildCustomValues(entities, customEntityValues) {
+    const customValues = {};
+
+    entities.forEach((entity, idx) => {
+      if (isForcedMask(entity)) return; // Tier1은 직접 수정 대상 아님
+
+      const value = customEntityValues?.[String(idx)];
+      if (value != null && value !== '') {
+        const key = `${entity.type}:${entity.start}:${entity.end}`;
+        customValues[key] = value;
+      }
+    });
+
+    return customValues;
+  }
+
+  /**
    * 백엔드 /rewrite에 최종 요청을 보낸다. (background.js가 실제 fetch를 수행)
    * @param {string} sessionId - /analyze 응답에 포함된 session_id
    * @param {Object<string, boolean>} decisions
    * @param {number|null} tabId - GET_LATEST_ANALYSIS로 받은 tabId
+   * @param {Object<string, string>} [customValues] - buildCustomValues()가 만든 값 (선택)
    */
-  function requestRewrite(sessionId, decisions, tabId) {
+  function requestRewrite(sessionId, decisions, tabId, customValues) {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage(
-        { type: 'REQUEST_REWRITE', payload: { sessionId, decisions, tabId } },
+        { type: 'REQUEST_REWRITE', payload: { sessionId, decisions, tabId, customValues } },
         (response) => resolve(response ?? { ok: false, error: '백그라운드로부터 응답 없음' })
       );
     });
@@ -97,5 +128,5 @@ const ApprovalSender = (function () {
     });
   }
 
-  return { buildDecisions, canKeepOriginal, requestRewrite, getLatestAnalysis };
+  return { buildDecisions, buildCustomValues, canKeepOriginal, requestRewrite, getLatestAnalysis };
 })();
