@@ -77,7 +77,8 @@ def rewrite(req: RewriteRequest):
 
         rewritten = run_rewrite(
             req.session_id,
-            req.decisions
+            req.decisions,
+            req.custom_values
         )
 
         return RewriteResponse(

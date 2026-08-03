@@ -16,6 +16,8 @@ const TITLES = {
   risk: '위험 분석',
   detection: '감지 내역',
   negotiation: '협상 · 안전한 표현 제안',
+  custom_rewrite: '직접 재작성',
+  rewrite_loading: '재작성 중',
   rewrite: '재작성 결과',
   sent: '전송 완료'
 };
@@ -24,6 +26,10 @@ const state = {
   stack: ['main'],
   analysis: null,   // { original, masked, entities, candidates, session_id, tabId, analyzedAt } | null
   choices: {},      // { [entityIndex:string]: true(보호/마스킹) | false(원문유지) }
+  entityMode: {},   // { [entityIndex:string]: 'mask' | 'keep' | 'custom' } - 협상 카드 버튼 활성 표시용
+  isProtected: true, // 보호 활성화 여부 (기본값: true)
+  customEditIdx: null,       // 지금 협상 카드 중 어떤 엔티티(index)를 직접 수정 중인지
+  customEntityValues: {},    // { [entityIndex:string]: 사용자가 입력한 대체 텍스트 }
   rewriteResult: null, // /rewrite 응답으로 받은 최종 텍스트
   loading: true,
   rewriteLoading: false,
@@ -54,10 +60,17 @@ function current(){ return state.stack[state.stack.length - 1]; }
 
 function initChoicesFromAnalysis(){
   state.choices = {};
+  state.customEntityValues = {}; // 새 분석 결과면 이전 직접수정 내용도 초기화
+  state.entityMode = {}; // idx별 현재 선택 모드: 'mask' | 'keep' | 'custom'
   const entities = state.analysis?.entities ?? [];
   entities.forEach((entity, idx) => {
-    // 기본값: 보호(true, 마스킹). 고유식별정보는 항상 true로 강제됨(ApprovalSender가 처리).
-    state.choices[String(idx)] = true;
+    // 기본값은 백엔드가 제안한 entity.default_masked를 따른다 — ADDRESS/ORGANIZATION은
+    // 목적 필요성 판단 결과로 true/false가 갈릴 수 있음. 필드가 없으면(구버전 분석
+    // 결과 등) 보호(true)로 안전하게 fallback. 고유식별정보는 항상 true로 강제됨
+    // (ApprovalSender가 처리).
+    const defaultMasked = entity.default_masked ?? true;
+    state.choices[String(idx)] = defaultMasked;
+    state.entityMode[String(idx)] = defaultMasked ? 'mask' : 'keep';
   });
 }
 
@@ -68,6 +81,14 @@ async function loadAnalysis(){
     const data = await ApprovalSender.getLatestAnalysis();
     state.analysis = data;
     initChoicesFromAnalysis();
+    
+    // storage에서 보호 상태 읽기
+    await new Promise((resolve) => {
+      chrome.storage.local.get('personaguard:protection_enabled', (result) => {
+        state.isProtected = result['personaguard:protection_enabled'] !== false;
+        resolve();
+      });
+    });
   } catch (err) {
     console.error('[PersonaGuard] 분석 결과 로딩 실패:', err);
     state.analysis = null;
@@ -105,6 +126,7 @@ function computeRiskLevel(){
 function renderMain(){
   const total = getEntities().length;
   const maskedCount = getEntities().filter((e, idx) => state.choices[String(idx)]).length;
+  const isProtected = state.isProtected !== false; // 기본값: true (보호 중)
 
   return `
     <div class="main-header">
@@ -119,9 +141,9 @@ function renderMain(){
       <div class="protect-icon-outer">
         <div class="protect-icon-inner"><i class="ti ti-shield-check" aria-hidden="true"></i></div>
       </div>
-      <p class="protect-title">보호 중이에요</p>
-      <p class="protect-desc">입력하는 개인정보를 실시간으로 감지해요</p>
-      <button class="protect-off-btn" id="toggleProtect">보호 끄기</button>
+      <p class="protect-title">${isProtected ? '보호 중이에요' : '보호 꺼짐'}</p>
+      <p class="protect-desc">${isProtected ? '입력하는 개인정보를 실시간으로 감지해요' : '민감정보 감지가 비활성화되었습니다'}</p>
+      <button class="protect-off-btn" id="toggleProtect">${isProtected ? '보호 끄기' : '보호 켜기'}</button>
     </div>
 
     <div class="stats-section">
@@ -141,6 +163,9 @@ function renderMain(){
     <div class="main-cta">
       <button class="btn-primary" id="goRisk" ${total === 0 ? 'disabled' : ''}>
         ${total === 0 ? '아직 감지된 프롬프트가 없어요' : '방금 감지된 프롬프트 확인하기'}
+      </button>
+      <button class="btn-outline" id="quickRewrite" style="margin-top:8px;width:100%;" ${total === 0 ? 'disabled' : ''}>
+        바로 재작성하기
       </button>
     </div>
   `;
@@ -246,25 +271,29 @@ function renderNegotiationCards(){
   return entities.map((entity, idx) => {
     const forced = !ApprovalSender.canKeepOriginal(entity);
     const isMasked = state.choices[String(idx)];
+    const mode = state.entityMode[String(idx)] ?? (isMasked ? 'mask' : 'keep');
+    const hasCustom = mode === 'custom' && state.customEntityValues[String(idx)] != null;
     // ⚠️ candidates[idx]가 entities[idx]와 매칭된다는 가정. 백엔드팀 확인 필요.
-    const suggestion = candidates[idx] ?? '(재작성 제안 없음)';
+    const suggestion = hasCustom ? state.customEntityValues[String(idx)] : (candidates[idx] ?? '(재작성 제안 없음)');
+    const suggestionLabel = hasCustom ? '직접 수정' : 'AI 제안';
+    const statusLabel = forced ? '강제 보호' : (hasCustom ? '직접 수정 적용' : (isMasked ? '마스킹 적용' : '원본 유지'));
 
     return `
       <div class="negotiation-card">
         <div class="negotiation-head">
           <div class="detect-head-left"><span class="dot" style="background:${forced ? '#993C1D' : '#BA7517'};"></span><span class="detect-label">${entity.type}</span></div>
-          <span class="negotiation-status ${isMasked ? 'done' : ''}">${forced ? '강제 보호' : (isMasked ? '마스킹 적용' : '원본 유지')}</span>
+          <span class="negotiation-status ${isMasked ? 'done' : ''}">${statusLabel}</span>
         </div>
         <p class="muted" style="margin:0 0 3px;">원본</p>
         <p class="text-orig">${entity.value}</p>
         <div class="arrow-center"><i class="ti ti-arrow-down" aria-hidden="true"></i></div>
-        <p class="muted" style="margin:0 0 3px;">AI 제안</p>
+        <p class="muted" style="margin:0 0 3px;">${suggestionLabel}</p>
         <p class="text-suggest">${suggestion}</p>
         ${forced ? '' : `
         <div class="negotiation-actions">
-          <button class="accept ${isMasked ? 'active' : ''}" data-idx="${idx}" data-mode="mask">마스킹 적용</button>
-          <button disabled>직접 수정</button>
-          <button class="keep ${!isMasked ? 'active' : ''}" data-idx="${idx}" data-mode="keep">원본 유지</button>
+          <button class="accept ${mode === 'mask' ? 'active' : ''}" style="${mode === 'mask' ? 'background:#0F6E56;color:#fff;border-color:#0F6E56;' : ''}" data-idx="${idx}" data-mode="mask">마스킹 적용</button>
+          <button class="edit ${mode === 'custom' ? 'active' : ''}" style="${mode === 'custom' ? 'background:#0F6E56;color:#fff;border-color:#0F6E56;' : ''}" data-idx="${idx}" id="editBtn-${idx}">직접 수정</button>
+          <button class="keep ${mode === 'keep' ? 'active' : ''}" style="${mode === 'keep' ? 'background:#0F6E56;color:#fff;border-color:#0F6E56;' : ''}" data-idx="${idx}" data-mode="keep">원본 유지</button>
         </div>`}
       </div>
     `;
@@ -295,42 +324,142 @@ function closeNegotiationDialog(){
   negotiationDialog.classList.add('hidden');
 }
 
+/**
+ * 재작성 화면(rewrite / rewrite_loading)에서 협상 다이얼로그로 돌아갈 때 쓰는 함수.
+ * 어떤 경로(일반 협상 경로 vs 바로 재작성하기)로 들어왔든 상관없이
+ * rewrite / rewrite_loading을 스택에서 걷어내고 detection 화면 위에서 다이얼로그를 연다.
+ */
+function returnToNegotiation(){
+  while (current() === 'rewrite' || current() === 'rewrite_loading') {
+    state.stack.pop();
+  }
+  if (current() !== 'detection') {
+    push('detection'); // render() 포함됨
+  } else {
+    render();
+  }
+  openNegotiationDialog();
+}
+
+/**
+ * AI 기본 판단(state.choices의 기본값)대로 바로 재작성 요청을 보낸다.
+ * 협상 화면을 거치지 않고 main에서 바로 호출될 수 있음.
+ */
+async function performQuickRewrite(){
+  state.rewriteError = null;
+  push('rewrite_loading');
+
+  const decisions = ApprovalSender.buildDecisions(getEntities(), state.choices);
+  const customValues = ApprovalSender.buildCustomValues(getEntities(), state.customEntityValues);
+  const res = await ApprovalSender.requestRewrite(
+    state.analysis?.session_id,
+    decisions,
+    state.analysis?.tabId,
+    customValues
+  );
+
+  if (!res.ok) {
+    state.rewriteError = '재작성 요청에 실패했어요. (백엔드 /rewrite 연동 전이면 정상입니다)';
+    returnToNegotiation(); // 실패 시 세부 조정할 수 있게 협상 화면으로
+    return;
+  }
+
+  const data = res.data ?? {};
+  state.rewriteResult = data.rewritten ?? data.masked ?? data.text ?? null;
+  push('rewrite');
+}
+
 function bindNegotiationDialogEvents(){
   document.getElementById('closeNegotiationDialog').onclick = closeNegotiationDialog;
 
-  negotiationDialogBox.querySelectorAll('button[data-idx]').forEach((btn) => {
+  // 마스킹 적용 / 원본 유지 버튼
+  negotiationDialogBox.querySelectorAll('button[data-mode]').forEach((btn) => {
     btn.onclick = () => {
       const idx = btn.dataset.idx;
-      state.choices[idx] = btn.dataset.mode === 'mask';
+      const mode = btn.dataset.mode; // 'mask' | 'keep'
+      state.choices[idx] = mode === 'mask';
+      state.entityMode[idx] = mode;
+      delete state.customEntityValues[idx]; // 직접 수정 값이 있었다면 해제 (모드 전환)
       openNegotiationDialog();
     };
   });
 
-  document.getElementById('goRewrite').onclick = async () => {
-    state.rewriteLoading = true;
-    state.rewriteError = null;
-    openNegotiationDialog();
+  // 직접 수정 버튼
+  negotiationDialogBox.querySelectorAll('button.edit').forEach((btn) => {
+    btn.onclick = () => {
+      state.customEditIdx = btn.dataset.idx; // 어떤 카드를 수정 중인지 기억
+      closeNegotiationDialog();
+      push('custom_rewrite');
+    };
+  });
 
+  document.getElementById('goRewrite').onclick = async () => {
+    state.rewriteError = null;
+    closeNegotiationDialog();
+    push('rewrite_loading');
+
+    // 항목별 "직접 수정" 값(state.customEntityValues)은 buildCustomValues()로
+    // decisions와 별도로 백엔드에 전달한다 — /rewrite의 custom_values 필드 참고.
     const decisions = ApprovalSender.buildDecisions(getEntities(), state.choices);
+    const customValues = ApprovalSender.buildCustomValues(getEntities(), state.customEntityValues);
     const res = await ApprovalSender.requestRewrite(
       state.analysis?.session_id,
       decisions,
-      state.analysis?.tabId
+      state.analysis?.tabId,
+      customValues
     );
-
-    state.rewriteLoading = false;
 
     if (!res.ok) {
       state.rewriteError = '재작성 요청에 실패했어요. (백엔드 /rewrite 연동 전이면 정상입니다)';
-      openNegotiationDialog();
+      returnToNegotiation();
       return;
     }
 
     const data = res.data ?? {};
     state.rewriteResult = data.rewritten ?? data.masked ?? data.text ?? null;
-    closeNegotiationDialog();
     push('rewrite');
   };
+}
+
+/* ===== 화면: 직접 재작성 ===== */
+
+function renderCustomRewrite(){
+  const idx = state.customEditIdx;
+  const entity = getEntities()[Number(idx)];
+  const candidates = state.analysis?.candidates ?? [];
+  const defaultSuggestion = candidates[idx] ?? '';
+  const currentText = state.customEntityValues[idx] ?? defaultSuggestion;
+
+  return `
+    <p class="muted" style="padding:10px 16px 0;">이 항목을 원하는 표현으로 직접 바꿀 수 있어요</p>
+    <div style="padding:12px 16px 4px;">
+      <p class="muted" style="margin:0 0 6px;">원본</p>
+      <div class="rewrite-box orig">${escapeHtml(entity?.value ?? '')}</div>
+      <p class="muted" style="margin:12px 0 6px;">바꿀 표현</p>
+      <textarea id="customRewriteInput" class="custom-rewrite-textarea">${escapeHtml(currentText)}</textarea>
+    </div>
+    <div class="actions-2">
+      <button class="btn-outline" id="cancelCustomRewrite">취소</button>
+      <button class="btn-fill" id="saveCustomRewrite">저장</button>
+    </div>
+  `;
+}
+
+/* ===== 화면: 재작성 로딩 ===== */
+
+function renderRewriteLoading(){
+  const maskedCount = getEntities().filter((e, idx) => state.choices[String(idx)]).length;
+  const keptCount = getEntities().length - maskedCount;
+
+  return `
+    <div class="section" style="text-align:center;padding:48px 16px;">
+      <div class="loading-spinner">
+        <div class="spinner-circle"></div>
+      </div>
+      <p class="loading-title">프롬프트를 안전하게 재작성하고 있어요</p>
+      <p class="loading-desc">마스킹 ${maskedCount}건 · 원본유지 ${keptCount}건이 적용됩니다</p>
+    </div>
+  `;
 }
 
 /* ===== 화면: 재작성 결과 ===== */
@@ -385,7 +514,7 @@ function renderLoading(){
 
 /* ===== 렌더 총괄 ===== */
 
-const renderers = { main: renderMain, risk: renderRisk, detection: renderDetection, rewrite: renderRewrite, sent: renderSent };
+const renderers = { main: renderMain, risk: renderRisk, detection: renderDetection, custom_rewrite: renderCustomRewrite, rewrite_loading: renderRewriteLoading, rewrite: renderRewrite, sent: renderSent };
 
 function render(){
   const scr = current();
@@ -404,7 +533,20 @@ const negotiationDialogBox = document.getElementById('negotiationDialogBox');
 function bindEvents(scr){
   if(scr === 'main'){
     document.getElementById('goRisk').onclick = () => push('risk');
-    document.getElementById('toggleProtect').onclick = () => {};
+
+    const quickBtn = document.getElementById('quickRewrite');
+    if (quickBtn) {
+      quickBtn.onclick = () => performQuickRewrite();
+    }
+
+    const toggleBtn = document.getElementById('toggleProtect');
+    if (toggleBtn) {
+      toggleBtn.onclick = () => {
+        state.isProtected = !state.isProtected;
+        chrome.storage.local.set({ 'personaguard:protection_enabled': state.isProtected });
+        render();
+      };
+    }
   } else if(scr === 'risk'){
     document.getElementById('goDetection').onclick = () => push('detection');
   } else if(scr === 'detection'){
@@ -412,13 +554,41 @@ function bindEvents(scr){
       if (!ApprovalSender.canKeepOriginal(entity)) return;
       CheckboxSelector.bindChoiceRow(app, String(idx), (value) => {
         state.choices[String(idx)] = value === 'mask';
+        state.entityMode[String(idx)] = value === 'mask' ? 'mask' : 'keep';
+        delete state.customEntityValues[String(idx)];
         render();
       });
     });
     document.getElementById('goNegotiation').onclick = () => openNegotiationDialog();
+  } else if(scr === 'custom_rewrite'){
+    const textarea = document.getElementById('customRewriteInput');
+    document.getElementById('saveCustomRewrite').onclick = () => {
+      const idx = state.customEditIdx;
+      state.customEntityValues[idx] = textarea.value;
+      state.choices[idx] = true; // 직접 수정한 값은 적용(마스킹)된 것으로 처리
+      state.entityMode[idx] = 'custom';
+      state.customEditIdx = null;
+      goBack(); // 협상 다이얼로그로 돌아가기
+      openNegotiationDialog();
+    };
+    document.getElementById('cancelCustomRewrite').onclick = () => {
+      state.customEditIdx = null;
+      goBack(); // 협상 다이얼로그로 돌아가기
+      openNegotiationDialog();
+    };
   } else if(scr === 'rewrite'){
-    document.getElementById('backToNegotiation').onclick = () => { goBack(); openNegotiationDialog(); };
-    document.getElementById('goApprove').onclick = () => push('sent');
+    document.getElementById('backToNegotiation').onclick = () => returnToNegotiation();
+    document.getElementById('goApprove').onclick = () => {
+      // 최종 텍스트를 content_script로 전달
+      chrome.runtime.sendMessage({
+        type: 'FILL_APPROVED_TEXT',
+        payload: {
+          text: state.rewriteResult,
+          tabId: state.analysis?.tabId
+        }
+      });
+      push('sent');
+    };
   } else if(scr === 'sent'){
     document.getElementById('restartBtn').onclick = () => restart();
   }
