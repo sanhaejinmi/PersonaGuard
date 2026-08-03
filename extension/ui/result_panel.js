@@ -65,9 +65,13 @@ function initChoicesFromAnalysis(){
   state.entityMode = {}; // idx별 현재 선택 모드: 'mask' | 'keep' | 'custom'
   const entities = state.analysis?.entities ?? [];
   entities.forEach((entity, idx) => {
-    // 기본값: 보호(true, 마스킹). 고유식별정보는 항상 true로 강제됨(ApprovalSender가 처리).
-    state.choices[String(idx)] = true;
-    state.entityMode[String(idx)] = 'mask';
+    // 기본값은 백엔드가 제안한 entity.default_masked를 따른다 — ADDRESS/ORGANIZATION은
+    // 목적 필요성 판단 결과로 true/false가 갈릴 수 있음. 필드가 없으면(구버전 분석
+    // 결과 등) 보호(true)로 안전하게 fallback. 고유식별정보는 항상 true로 강제됨
+    // (ApprovalSender가 처리).
+    const defaultMasked = entity.default_masked ?? true;
+    state.choices[String(idx)] = defaultMasked;
+    state.entityMode[String(idx)] = defaultMasked ? 'mask' : 'keep';
   });
 }
 

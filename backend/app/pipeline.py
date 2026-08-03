@@ -3,7 +3,7 @@ Pipeline Controller — §3 파이프라인 순서 중 백엔드 담당 구간(�
 ①⑦⑨는 Extension 담당.
 
 regex_engine.detect_regex()는 이제 자체적으로 정규식 간 겹침을 정리해서 반환한다
-(RRN 우선 처리 포함). eeve_client.detect_llm()도 이제 start/end를 직접 계산해서
+(RRN 우선 처리 포함). exaone_client.detect_llm()도 이제 start/end를 직접 계산해서
 주지만, 그 오프셋은 detect_llm()에 넘긴 텍스트(마스킹본) 기준이라 원본 프롬프트
 오프셋과 좌표계가 다르다 — 그래서 이 파일은 여전히 값(value)을 원본 프롬프트에서
 재검색해 오프셋을 구한다.
@@ -14,7 +14,25 @@ app.actions.apply_policy.apply_policy()가 탐지+정책+치환을 한 번에 �
 apply_policy()를 통째로 쓰지 않고, 그 안에 있는 것과 동일한 정책(POLICY +
 mask_value + replace_*)을 항목 단위로 재사용해 사용자 결정을 반영할 수 있게
 만든다 — POLICY나 replace_* 쪽이 바뀌면 이 파일의 `_replacement_for()`도 같이
-맞춰야 한다.
+맞춰야 한다. PERSON 마스킹(`_mask_person`)과 ADDRESS/ORGANIZATION 치환
+(`replace_address`/`replace_organization`)은 apply_policy.py가 쓰는 것과 동일한
+함수를 재사용해 두 경로의 결과가 어긋나지 않게 했다.
+
+app.rewrite.entity_filter의 is_valid_person_name/is_valid_organization으로 LLM이
+직함·일반명사를 PERSON/ORGANIZATION으로 오탐지하는 사례(§2)를 걸러낸다.
+
+⑧ 재작성 마지막 단계에서 app.rewrite.llm_polish.polish_with_llm()로 문장을
+자연스럽게 다듬고, app.rewrite.self_check.self_check_rewrite()로 재탐지해
+PII/잔류 라벨이 남았는지 확인한다 — 남아있으면 한 번만 재시도하고, 그래도
+남아있으면 그 결과를 그대로 반환한다(무한 재시도 없음, §8 확정).
+
+Entity.default_masked — 체크박스 기본값(자기결정의 "기본 제안")은 더 이상
+tier로만 정하지 않는다. app.rewrite.action.decide_action()을 그대로 재사용해서
+PERSON/PHONE/EMAIL 등은 기존처럼 항상 기본 마스킹하되, ADDRESS/ORGANIZATION은
+app.rewrite.purpose.infer_purpose() + app.rewrite.necessity.classify_necessity()
+로 "이 정보가 프롬프트 목적에 필요한가"를 판단해서 필요하면 기본 비마스킹(유지
+제안)한다. 사용자는 여전히 체크박스로 이 기본값을 뒤집을 수 있다 — 자동 판단은
+"기본값 제안"이지 강제가 아니다(Tier1 제외).
 """
 
 import re
@@ -25,9 +43,17 @@ from app.actions.masking import mask_value
 from app.actions.policy import POLICY
 from app.exaone_client import detect_llm
 from app.regex_engine import detect_regex
+from app.replace.replace_address import replace_address
 from app.replace.replace_bank_account import replace_account
 from app.replace.replace_email import replace_email
+from app.replace.replace_organization import replace_organization
 from app.replace.replace_phone import replace_phone
+from app.rewrite.action import decide_action
+from app.rewrite.entity_filter import is_valid_organization, is_valid_person_name
+from app.rewrite.llm_polish import polish_with_llm
+from app.rewrite.necessity import classify_necessity
+from app.rewrite.purpose import infer_purpose
+from app.rewrite.self_check import self_check_rewrite
 from app.schemas import AnalyzeResponse, Entity
 
 MAX_PROMPT_LENGTH = 50_000  # §5.5 ReDoS 방지 — 입력 길이 상한
@@ -36,9 +62,14 @@ MAX_PROMPT_LENGTH = 50_000  # §5.5 ReDoS 방지 — 입력 길이 상한
 TIER1_TYPES = {"RRN", "PASSPORT", "DRIVER_LICENSE", "FOREIGNER_REGISTRATION"}
 # 나머지 regex 타입(PHONE, EMAIL, BANK_ACCOUNT, CARD, BUSINESS_NUMBER 등)은 Tier2
 
-# eeve_client.detect_llm()이 실제로 반환하는 카테고리 (§4.2 — life_context/question_essential
+# exaone_client.detect_llm()이 실제로 반환하는 카테고리 (§4.2 — life_context/question_essential
 # 구분은 아직 미구현이라, LLM 탐지분은 전부 Tier3로 취급한다)
 LLM_CATEGORIES = ("PERSON", "ADDRESS", "ORGANIZATION")
+
+# app.rewrite.action.decide_action()의 _JUDGE_BY_NECESSITY와 동일 — 이 타입들만
+# 목적 필요성 판단 대상이라, classify_necessity() 호출 여부를 이걸로 결정한다.
+# action.py 쪽 집합이 바뀌면 여기도 맞춰야 한다.
+_NECESSITY_JUDGED_TYPES = {"ADDRESS", "ORGANIZATION"}
 
 
 def _tier_of(entity_type: str, source: str) -> int:
@@ -47,11 +78,20 @@ def _tier_of(entity_type: str, source: str) -> int:
     return 3
 
 
+def _mask_person(name: str) -> str:
+    """apply_policy.py::mask_person()과 동일 — 첫 글자만 남기고 나머지 마스킹."""
+    if len(name) <= 1:
+        return "*"
+    return name[0] + "*" * (len(name) - 1)
+
+
 def _replacement_for(entity_type: str, value: str) -> str:
     """app.actions.apply_policy.apply_policy()와 동일한 POLICY를 항목 단위로 재사용."""
     action = POLICY.get(entity_type, "mask")
 
     if action == "mask":
+        if entity_type == "PERSON":
+            return _mask_person(value)
         return mask_value(value, entity_type)
 
     if action == "replace":
@@ -61,12 +101,10 @@ def _replacement_for(entity_type: str, value: str) -> str:
             return replace_email(value)
         if entity_type == "BANK_ACCOUNT":
             return replace_account(value)
-        if entity_type == "PERSON":
-            return "[사용자 이름]"
         if entity_type == "ADDRESS":
-            return "[주소]"
+            return replace_address(value)
         if entity_type == "ORGANIZATION":
-            return "[기관]"
+            return replace_organization(value)
         return "[REDACTED]"
 
     return value
@@ -81,11 +119,16 @@ def _find_all(text: str, value: str) -> list[tuple[int, int]]:
 def _llm_items(prompt: str, llm_raw: dict) -> list[dict]:
     """detect_llm() 출력을 원본 프롬프트 기준 오프셋으로 변환.
     detect_llm()이 주는 start/end는 자신에게 입력된 텍스트(마스킹본) 기준이라
-    원본 프롬프트 좌표계와 달라서 쓰지 않고, 값(text)을 원본에서 재검색한다."""
+    원본 프롬프트 좌표계와 달라서 쓰지 않고, 값(text)을 원본에서 재검색한다.
+    entity_filter로 직함·일반명사 오탐지(§2)를 걸러낸다."""
     items = []
     for category in LLM_CATEGORIES:
         for entry in llm_raw.get(category, []):
             value = entry.get("text", "")
+            if category == "PERSON" and not is_valid_person_name(value):
+                continue
+            if category == "ORGANIZATION" and not is_valid_organization(value):
+                continue
             for start, end in _find_all(prompt, value):
                 items.append(
                     {
@@ -122,6 +165,29 @@ def _apply_replacements(text: str, items: list[dict]) -> str:
     return text
 
 
+def _assign_default_masked(items: list[dict], purpose_source_text: str) -> None:
+    """items 각 항목에 "default_masked"(체크박스 기본값)를 in-place로 채운다.
+
+    ADDRESS/ORGANIZATION만 목적 필요성을 판단한다 — 판단 대상이 없으면 목적
+    추론(infer_purpose)/필요성 분류(classify_necessity) 호출 자체를 건너뛴다
+    (불필요한 exaone3.5:7.8b 호출 방지). 나머지 타입은 decide_action()이 필요성과
+    무관하게 항상 같은 결과를 주므로 필요성 값은 그냥 False로 채워 넣는다.
+    """
+    judge_targets = [e for e in items if e["type"] in _NECESSITY_JUDGED_TYPES]
+
+    necessity_map: dict[str, bool] = {}
+    if judge_targets:
+        purpose = infer_purpose(purpose_source_text)
+        necessity_map = classify_necessity(
+            purpose, [{"type": e["type"], "value": e["value"]} for e in judge_targets]
+        )
+
+    for e in items:
+        necessary = necessity_map.get(e["value"], False)
+        action = decide_action(e["type"], necessary)
+        e["default_masked"] = action != "keep"
+
+
 def run_analysis(prompt: str) -> AnalyzeResponse:
     if len(prompt) > MAX_PROMPT_LENGTH:
         raise ValueError(f"prompt exceeds max length ({MAX_PROMPT_LENGTH})")
@@ -134,17 +200,34 @@ def run_analysis(prompt: str) -> AnalyzeResponse:
     regex_masked = _apply_replacements(prompt, regex_items) if regex_items else prompt
 
     # ④ EEVE 1차 호출(탐색) — 실제 로컬 LLM 호출
-    llm_raw = detect_llm(regex_masked)
+    # exaone_client.detect_llm()이 모델 출력 형식이 어긋나면(예: {"text":...} 대신
+    # 문자열만 반환) 크래시하는 경우가 실제로 있다 (약 1/3 빈도로 재현됨, 원인은
+    # exaone_client.py 쪽 — 우리 파일 아님). regex 탐지분만으로라도 /analyze가
+    # 죽지 않도록 방어한다.
+    try:
+        llm_raw = detect_llm(regex_masked)
+    except Exception:
+        llm_raw = {}
     llm_items = _llm_items(prompt, llm_raw)
 
     # ⑤ Detection Result 통합 (원본 오프셋 기준, 겹침 정리)
     items = _dedupe_overlaps(regex_items + llm_items)
 
-    # 기본 정책 적용본 (POLICY 기준 mask/replace)
+    # 기본 정책 적용본 (POLICY 기준 mask/replace, 미리보기용 — LLM 재작성은 안 함)
     final_masked = _apply_replacements(prompt, items)
 
+    # 체크박스 기본값 — ADDRESS/ORGANIZATION은 목적 필요성 판단, 나머지는 항상 마스킹
+    _assign_default_masked(items, final_masked)
+
     entities = [
-        Entity(type=e["type"], value=e["value"], start=e["start"], end=e["end"], tier=e["tier"])
+        Entity(
+            type=e["type"],
+            value=e["value"],
+            start=e["start"],
+            end=e["end"],
+            tier=e["tier"],
+            default_masked=e["default_masked"],
+        )
         for e in items
     ]
     # entities와 동일 index로 매칭되는 치환 미리보기 (Extension 협상 화면 "AI 제안")
@@ -165,10 +248,18 @@ def run_analysis(prompt: str) -> AnalyzeResponse:
 def run_rewrite(session_id: str, decisions: dict[str, bool]) -> str:
     """
     ⑧ 재작성. decisions 키는 "TYPE:start:end" (Extension approval_sender.js와 동일 규약).
-    미언급 항목의 기본값은 보호(True) — approval_sender.js와 동일.
+    미언급 항목은 run_analysis()가 계산해둔 AI 기본 제안(entity.default_masked)을
+    따른다 — 사용자가 체크박스를 명시적으로 건드리지 않은 항목은 AI 판단이 곧
+    기본값이라는 뜻이다.
 
     Tier1(고유식별정보)은 decisions에 뭐라고 오든 항상 보호한다 — Extension도
     동일하게 강제하지만, 서버도 이중으로 강제한다 (§5 — 클라이언트만 신뢰하지 않는다).
+
+    확정 항목을 치환한 뒤 polish_with_llm()으로 자연스럽게 다듬고,
+    self_check_rewrite()로 PII/잔류 라벨이 남았는지 재확인한다. 남아있으면
+    한 번만 재시도하고, 그래도 남아있으면 그 결과를 그대로 반환한다 — 무한
+    재시도는 하지 않는다(§8 확정). self_check 결과는 값이 아니라 타입별 개수만
+    담고 있어 로그로 남겨도 §5.2(PII 로그 금지)를 위반하지 않는다.
     """
     session = session_store.get(session_id)
     if session is None:
@@ -179,6 +270,15 @@ def run_rewrite(session_id: str, decisions: dict[str, bool]) -> str:
     def _key(e: dict) -> str:
         return f"{e['type']}:{e['start']}:{e['end']}"
 
-    to_protect = [e for e in items if e["tier"] == 1 or decisions.get(_key(e), True)]
+    to_protect = [
+        e for e in items if e["tier"] == 1 or decisions.get(_key(e), e["default_masked"])
+    ]
 
-    return _apply_replacements(session["original"], to_protect)
+    masked_text = _apply_replacements(session["original"], to_protect)
+
+    rewritten = polish_with_llm(masked_text)
+    if self_check_rewrite(rewritten) is not None:
+        print(f"[PersonaGuard] self-check flagged residual PII, retrying once (session={session_id})")
+        rewritten = polish_with_llm(masked_text)
+
+    return rewritten
