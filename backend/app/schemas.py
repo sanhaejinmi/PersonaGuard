@@ -25,6 +25,7 @@ class AnalyzeResponse(BaseModel):
 class RewriteRequest(BaseModel):
     session_id: str
     decisions: dict[str, bool]  # key: "TYPE:start:end", value: 보호(True)/원문유지(False)
+    custom_values: dict[str, str] = {}  # key: "TYPE:start:end", value: 사용자가 직접 입력한 대체 텍스트. Tier1은 서버가 무시(강제 마스킹).
 
 
 class RewriteResponse(BaseModel):
