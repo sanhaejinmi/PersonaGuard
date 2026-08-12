@@ -7,19 +7,34 @@ def add_position(prompt, entities):
     LLM 탐지 결과에 start/end 위치 추가
     - 같은 텍스트가 여러 번 등장하면 모든 위치를 각각 엔티티로 추가한다
     - LLM이 같은 텍스트를 중복 반환해도 한 번만 처리한다
+    - exaone3.5:2.4b가 가끔 {"text": "..."} 대신 문자열을 그대로 리스트에
+      담아 반환하는 경우가 있어(3회 중 1회꼴로 재현, /analyze 500 에러의
+      원인이었음), 항목이 dict가 아니거나 entities 자체가 예상한 구조가
+      아니어도 죽지 않도록 방어한다.
     """
 
     result = {}
+
+    if not isinstance(entities, dict):
+        return result
 
     for entity_type, items in entities.items():
 
         result[entity_type] = []
 
+        if not isinstance(items, list):
+            continue
+
         seen_texts = set()
 
         for item in items:
 
-            text = item.get("text")
+            if isinstance(item, dict):
+                text = item.get("text")
+            elif isinstance(item, str):
+                text = item
+            else:
+                continue
 
             if not text:
                 continue

@@ -28,7 +28,6 @@ const state = {
   choices: {},      // { [entityIndex:string]: true(보호/마스킹) | false(원문유지) }
   entityMode: {},   // { [entityIndex:string]: 'mask' | 'keep' | 'custom' } - 협상 카드 버튼 활성 표시용
   isProtected: true, // 보호 활성화 여부 (기본값: true)
-  customRewriteText: null, // (레거시, 더 이상 사용 안 함 - 엔티티 단위 수정으로 대체됨)
   customEditIdx: null,       // 지금 협상 카드 중 어떤 엔티티(index)를 직접 수정 중인지
   customEntityValues: {},    // { [entityIndex:string]: 사용자가 입력한 대체 텍스트 }
   rewriteResult: null, // /rewrite 응답으로 받은 최종 텍스트
@@ -65,9 +64,13 @@ function initChoicesFromAnalysis(){
   state.entityMode = {}; // idx별 현재 선택 모드: 'mask' | 'keep' | 'custom'
   const entities = state.analysis?.entities ?? [];
   entities.forEach((entity, idx) => {
-    // 기본값: 보호(true, 마스킹). 고유식별정보는 항상 true로 강제됨(ApprovalSender가 처리).
-    state.choices[String(idx)] = true;
-    state.entityMode[String(idx)] = 'mask';
+    // 기본값은 백엔드가 제안한 entity.default_masked를 따른다 — ADDRESS/ORGANIZATION은
+    // 목적 필요성 판단 결과로 true/false가 갈릴 수 있음. 필드가 없으면(구버전 분석
+    // 결과 등) 보호(true)로 안전하게 fallback. 고유식별정보는 항상 true로 강제됨
+    // (ApprovalSender가 처리).
+    const defaultMasked = entity.default_masked ?? true;
+    state.choices[String(idx)] = defaultMasked;
+    state.entityMode[String(idx)] = defaultMasked ? 'mask' : 'keep';
   });
 }
 
@@ -346,11 +349,13 @@ async function performQuickRewrite(){
   state.rewriteError = null;
   push('rewrite_loading');
 
-  const decisions = ApprovalSender.buildDecisions(getEntities(), state.choices, state.customEntityValues);
+  const decisions = ApprovalSender.buildDecisions(getEntities(), state.choices);
+  const customValues = ApprovalSender.buildCustomValues(getEntities(), state.customEntityValues);
   const res = await ApprovalSender.requestRewrite(
     state.analysis?.session_id,
     decisions,
-    state.analysis?.tabId
+    state.analysis?.tabId,
+    customValues
   );
 
   if (!res.ok) {
@@ -391,75 +396,17 @@ function bindNegotiationDialogEvents(){
   document.getElementById('goRewrite').onclick = async () => {
     state.rewriteError = null;
     closeNegotiationDialog();
-    
-    // 직접 수정한 텍스트가 있으면, 그걸 다시 분석해야 함
-    if (state.customRewriteText) {
-      push('rewrite_loading');
-      
-      try {
-        // 1. 직접 수정 텍스트를 새로 분석
-        const analyzeRes = await fetch('http://127.0.0.1:8000/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prompt: state.customRewriteText })
-        });
-        
-        if (!analyzeRes.ok) {
-          throw new Error('직접 수정 텍스트 분석 실패');
-        }
-        
-        const newAnalysis = await analyzeRes.json();
-        const newSession = {
-          original: state.customRewriteText,
-          items: newAnalysis.entities.map((e, idx) => ({
-            type: e.type,
-            value: e.value,
-            start: e.start,
-            end: e.end,
-            tier: e.tier ?? 3
-          }))
-        };
-        
-        // 2. 새로운 entities에 decisions 적용
-        const decisions = {};
-        newAnalysis.entities.forEach((e, idx) => {
-          const key = `${e.type}:${e.start}:${e.end}`;
-          decisions[key] = true; // 직접 수정 텍스트의 모든 항목은 보호 처리
-        });
-        
-        // 3. /rewrite 호출 (새로운 텍스트 기준)
-        const rewriteRes = await fetch('http://127.0.0.1:8000/rewrite', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            session_id: state.analysis?.session_id,
-            decisions: decisions,
-            custom_text: state.customRewriteText  // 백엔드가 처리 필요
-          })
-        });
-        
-        if (!rewriteRes.ok) {
-          throw new Error('재작성 요청 실패');
-        }
-        
-        const data = await rewriteRes.json();
-        state.rewriteResult = data.rewritten ?? data.masked ?? data.text ?? null;
-        push('rewrite');
-      } catch (err) {
-        state.rewriteError = err.message || '직접 수정 텍스트 처리 실패';
-        returnToNegotiation();
-      }
-      return;
-    }
-
-    // 직접 수정이 없으면 기존 로직
     push('rewrite_loading');
 
-    const decisions = ApprovalSender.buildDecisions(getEntities(), state.choices, state.customEntityValues);
+    // 항목별 "직접 수정" 값(state.customEntityValues)은 buildCustomValues()로
+    // decisions와 별도로 백엔드에 전달한다 — /rewrite의 custom_values 필드 참고.
+    const decisions = ApprovalSender.buildDecisions(getEntities(), state.choices);
+    const customValues = ApprovalSender.buildCustomValues(getEntities(), state.customEntityValues);
     const res = await ApprovalSender.requestRewrite(
       state.analysis?.session_id,
       decisions,
-      state.analysis?.tabId
+      state.analysis?.tabId,
+      customValues
     );
 
     if (!res.ok) {
