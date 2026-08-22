@@ -14,6 +14,7 @@ LLM PERSON/ADDRESS/ORGANIZATION)으로 한정한다. 나이·성별처럼 시스
 
 from __future__ import annotations
 
+import csv
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -122,12 +123,57 @@ def _case_from_dict(raw: dict) -> TestCase:
     return TestCase(gold_entities=entities, **kwargs)
 
 
+def _load_csv_dataset(path: Path) -> list[TestCase]:
+    """실험 2용 prompt-level CSV를 TestCase 목록으로 변환한다.
+
+    ``gold_entities_json``은 GoldEntity 객체 배열을 담는다. 빈 문자열로 저장된
+    선택 필드는 dataclass 검증 전에 ``None``으로 정규화한다.
+    """
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        required = {
+            "id", "split", "domain", "family_id", "purpose", "seed_prompt",
+            "v1_prompt", "gold_entities_json",
+        }
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"input CSV is missing columns: {sorted(missing)}")
+
+        cases = []
+        for row_number, row in enumerate(reader, start=2):
+            try:
+                entities = json.loads(row["gold_entities_json"] or "[]")
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"invalid gold_entities_json at CSV row {row_number}: {exc}"
+                ) from exc
+            raw = {
+                "id": row["id"],
+                "split": row["split"],
+                "domain": row["domain"],
+                "family_id": row["family_id"],
+                "purpose": row["purpose"],
+                "seed_prompt": row["seed_prompt"],
+                "v1_prompt": row["v1_prompt"],
+                "gold_entities": entities,
+                "test_category": row.get("test_category") or None,
+                "challenge_trap": row.get("challenge_trap") or None,
+                "source_ref": row.get("source_ref") or None,
+            }
+            cases.append(_case_from_dict(raw))
+    return cases
+
+
 def load_dataset(path: str | Path) -> list[TestCase]:
-    """JSON 파일에서 테스트 케이스를 읽는다.
+    """JSON 또는 실험 2 prompt-level CSV에서 테스트 케이스를 읽는다.
 
     최상위가 리스트여도 되고, {"meta": {...}, "cases": [...]} 형태여도 된다.
     """
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    dataset_path = Path(path)
+    if dataset_path.suffix.lower() == ".csv":
+        return _load_csv_dataset(dataset_path)
+
+    raw = json.loads(dataset_path.read_text(encoding="utf-8"))
     cases_raw = raw["cases"] if isinstance(raw, dict) else raw
     return [_case_from_dict(c) for c in cases_raw]
 
