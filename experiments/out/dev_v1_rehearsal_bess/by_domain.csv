@@ -1,0 +1,11 @@
+﻿domain,scope,tp,fp,fn,precision,recall,f1
+건강·의료,all_gold_pii,34,1,12,0.9714,0.7391,0.8395
+건강·의료,personaguard_supported_gold_only,34,1,0,0.9714,1.0,0.9855
+금융·소비자·고객지원,all_gold_pii,38,0,6,1.0,0.8636,0.9268
+금융·소비자·고객지원,personaguard_supported_gold_only,38,0,0,1.0,1.0,1.0
+법률·공공행정,all_gold_pii,36,2,10,0.9474,0.7826,0.8571
+법률·공공행정,personaguard_supported_gold_only,36,2,2,0.9474,0.9474,0.9474
+여행·지역추천,all_gold_pii,33,9,9,0.7857,0.7857,0.7857
+여행·지역추천,personaguard_supported_gold_only,33,9,1,0.7857,0.9706,0.8684
+채용·교육·커리어,all_gold_pii,38,0,12,1.0,0.76,0.8636
+채용·교육·커리어,personaguard_supported_gold_only,38,0,0,1.0,1.0,1.0

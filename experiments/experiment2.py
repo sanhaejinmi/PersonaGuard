@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.pipeline import run_analysis, run_rewrite
 from experiments.dataset import TestCase
 from experiments.masking_eval import (
     MaskingResult,
@@ -108,8 +107,13 @@ def run_experiment2a(cases: list[TestCase]) -> Experiment2Summary:
 
 
 def run_experiment2b(cases: list[TestCase]) -> Experiment2Summary:
+    # 2-A는 Ollama 없이 실행할 수 있어야 하므로 전체 파이프라인은 2-B에서만 불러온다.
+    from app.pipeline import run_analysis, run_rewrite
+
     """PersonaGuard 전체 파이프라인(탐지 → 협상 기본값 → 재작성)을 그대로 실행해 평가한다.
     로컬 Ollama 서버(+exaone3.5:2.4b, polish용 7.8b)가 필요하다."""
+    # 2-A는 Ollama 없이 실행할 수 있어야 하므로 전체 파이프라인은 2-B에서만 불러온다.
+    from app.pipeline import run_analysis, run_rewrite
     per_case: list[MaskingResult] = []
 
     for case in cases:
