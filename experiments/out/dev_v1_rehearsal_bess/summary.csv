@@ -1,0 +1,4 @@
+﻿scope,tp,fp,fn,precision,recall,f1
+all_gold_pii,179,12,49,0.9372,0.7851,0.8544
+personaguard_supported_gold_only,179,12,3,0.9372,0.9835,0.9598
+synthetic_injected_region_only,175,0,48,1.0,0.7848,0.8794
