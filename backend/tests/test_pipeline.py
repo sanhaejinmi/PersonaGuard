@@ -218,8 +218,12 @@ def test_run_rewrite_retries_once_when_self_check_flags_issue(monkeypatch):
     polish_calls = []
 
     def fake_polish(text):
+        # 플레이스홀더 토큰(§_build_polish_input)은 그대로 에코해야 한다 — 안 그러면
+        # _polish_once()가 "확정값이 삭제됐다"고 판단해 self_check와 무관하게
+        # 재시도/폴백이 걸려서 이 테스트가 검증하려는 self_check 재시도 로직과
+        # 뒤섞인다. 호출 횟수를 구분할 마커만 뒤에 덧붙인다.
         polish_calls.append(text)
-        return f"polished-{len(polish_calls)}"
+        return f"{text} <<polished-{len(polish_calls)}>>"
 
     check_calls = []
 
@@ -234,7 +238,7 @@ def test_run_rewrite_retries_once_when_self_check_flags_issue(monkeypatch):
     result = pipeline.run_rewrite(session_id, {})
 
     assert len(polish_calls) == 2  # 최초 1회 + 재시도 1회, 그 이상은 없음
-    assert result == "polished-2"
+    assert result.endswith("<<polished-2>>")  # 재시도 결과가 최종 반환됨
 
 
 def test_run_rewrite_gives_up_after_one_retry_if_still_flagged(monkeypatch):
@@ -245,10 +249,73 @@ def test_run_rewrite_gives_up_after_one_retry_if_still_flagged(monkeypatch):
     (session_id,) = session_store._store.keys()
 
     polish_calls = []
-    monkeypatch.setattr(pipeline, "polish_with_llm", lambda text: polish_calls.append(1) or "still-flagged")
+
+    def fake_polish(text):
+        polish_calls.append(1)
+        return f"{text} still-flagged"  # 플레이스홀더는 보존, 뒤에 마커만 추가
+
+    monkeypatch.setattr(pipeline, "polish_with_llm", fake_polish)
     monkeypatch.setattr(pipeline, "self_check_rewrite", lambda text: object())  # 항상 문제 있음
 
     result = pipeline.run_rewrite(session_id, {})
 
     assert len(polish_calls) == 2  # 무한 재시도 아님 — 1회 재시도로 끝
-    assert result == "still-flagged"  # 그래도 남아있으면 결과를 그대로 반환
+    assert result.endswith("still-flagged")  # 그래도 남아있으면 결과를 그대로 반환
+
+
+def test_run_rewrite_recovers_when_polish_drops_entity_once(monkeypatch):
+    # 실측(실제 exaone3.5:7.8b) 결과, polish_with_llm이 "직접 수정"/"원문 유지"로
+    # 확정된 값을 감싼 플레이스홀더 토큰을 가끔 통째로 지워버리는 사례가 있었다
+    # (§13 규칙을 추가했지만 항상 지켜지진 않음). 첫 시도에서만 토큰이 빠지고
+    # 재시도에서 살아남으면, 재시도 결과가 그대로 반환돼야 한다.
+    prompt = "이민수입니다"
+    llm_raw = {"PERSON": [{"text": "이민수"}], "ADDRESS": [], "ORGANIZATION": []}
+    with patch("app.pipeline.detect_llm", return_value=llm_raw):
+        pipeline.run_analysis(prompt)
+    (session_id,) = session_store._store.keys()
+
+    polish_calls = []
+
+    def fake_polish(text):
+        polish_calls.append(text)
+        if len(polish_calls) == 1:
+            return "문의 이메일 작성해줘"  # 플레이스홀더 토큰이 통째로 사라짐
+        return text  # 재시도에서는 토큰 보존
+
+    monkeypatch.setattr(pipeline, "polish_with_llm", fake_polish)
+    monkeypatch.setattr(pipeline, "self_check_rewrite", lambda text: None)  # self_check는 문제 없다고 봄
+
+    result = pipeline.run_rewrite(session_id, {})
+
+    assert len(polish_calls) == 2  # preserved=False만으로도 재시도가 걸려야 함
+    assert "이민수" not in result  # PERSON은 기본 마스킹 대상이라 원문이 남으면 안 됨
+    assert "*" in result  # 마스킹된 형태(이**)가 최종 결과에 살아있어야 함
+
+
+def test_run_rewrite_falls_back_to_unpolished_text_when_polish_keeps_dropping_entity(
+    monkeypatch,
+):
+    # 재시도 후에도 계속 확정값(플레이스홀더)이 사라지면, "덜 매끄럽더라도 사용자
+    # 결정이 조용히 사라지는 것보다 낫다"는 원칙에 따라 polish를 거치지 않은
+    # (플레이스홀더만 복원한) 텍스트를 그대로 반환해야 한다.
+    prompt = "이민수입니다"
+    llm_raw = {"PERSON": [{"text": "이민수"}], "ADDRESS": [], "ORGANIZATION": []}
+    with patch("app.pipeline.detect_llm", return_value=llm_raw):
+        pipeline.run_analysis(prompt)
+    (session_id,) = session_store._store.keys()
+
+    polish_calls = []
+
+    def fake_polish(text):
+        polish_calls.append(text)
+        return "완전히 다른 문장"  # 매번 플레이스홀더를 통째로 지움
+
+    monkeypatch.setattr(pipeline, "polish_with_llm", fake_polish)
+    monkeypatch.setattr(pipeline, "self_check_rewrite", lambda text: None)
+
+    result = pipeline.run_rewrite(session_id, {})
+
+    assert len(polish_calls) == 2  # 여기서도 재시도는 최대 1회
+    assert "완전히 다른 문장" not in result  # polish 결과를 신뢰하지 않고 폐기해야 함
+    assert "이민수" not in result  # PERSON은 기본 마스킹 — 원문이 그대로 새면 안 됨
+    assert "*" in result  # 마스킹된 값(이**)이 최종적으로 남아있어야 함
