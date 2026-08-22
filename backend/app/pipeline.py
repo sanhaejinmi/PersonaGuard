@@ -1,0 +1,373 @@
+"""
+Pipeline Controller — §3 파이프라인 순서 중 백엔드 담당 구간(②~⑥, ⑧)을 조율한다.
+①⑦⑨는 Extension 담당.
+
+regex_engine.detect_regex()는 이제 자체적으로 정규식 간 겹침을 정리해서 반환한다
+(RRN 우선 처리 포함). exaone_client.detect_llm()도 이제 start/end를 직접 계산해서
+주지만, 그 오프셋은 detect_llm()에 넘긴 텍스트(마스킹본) 기준이라 원본 프롬프트
+오프셋과 좌표계가 다르다 — 그래서 이 파일은 여전히 값(value)을 원본 프롬프트에서
+재검색해 오프셋을 구한다.
+
+app.actions.apply_policy.apply_policy()가 탐지+정책+치환을 한 번에 처리하는
+자체 파이프라인을 이미 갖고 있지만, 텍스트 전체에 정책(POLICY)을 무조건 적용할
+뿐 사용자의 항목별 결정(decisions)을 반영할 방법이 없다. 그래서 여기서는
+apply_policy()를 통째로 쓰지 않고, 그 안에 있는 것과 동일한 정책(POLICY +
+mask_value + replace_*)을 항목 단위로 재사용해 사용자 결정을 반영할 수 있게
+만든다 — POLICY나 replace_* 쪽이 바뀌면 이 파일의 `_replacement_for()`도 같이
+맞춰야 한다. PERSON 마스킹(`_mask_person`)과 ADDRESS/ORGANIZATION 치환
+(`replace_address`/`replace_organization`)은 apply_policy.py가 쓰는 것과 동일한
+함수를 재사용해 두 경로의 결과가 어긋나지 않게 했다.
+
+app.rewrite.entity_filter의 is_valid_person_name/is_valid_organization으로 LLM이
+직함·일반명사를 PERSON/ORGANIZATION으로 오탐지하는 사례(§2)를 걸러낸다.
+
+⑧ 재작성 마지막 단계에서 app.rewrite.llm_polish.polish_with_llm()로 문장을
+자연스럽게 다듬고, app.rewrite.self_check.self_check_rewrite()로 재탐지해
+PII/잔류 라벨이 남았는지 확인한다 — 남아있으면 한 번만 재시도하고, 그래도
+남아있으면 그 결과를 그대로 반환한다(무한 재시도 없음, §8 확정).
+
+Entity.default_masked — 체크박스 기본값(자기결정의 "기본 제안")은 더 이상
+tier로만 정하지 않는다. app.rewrite.action.decide_action()을 그대로 재사용해서
+PERSON/PHONE/EMAIL 등은 기존처럼 항상 기본 마스킹하되, ADDRESS/ORGANIZATION은
+app.rewrite.purpose.infer_purpose() + app.rewrite.necessity.classify_necessity()
+로 "이 정보가 프롬프트 목적에 필요한가"를 판단해서 필요하면 기본 비마스킹(유지
+제안)한다. 사용자는 여전히 체크박스로 이 기본값을 뒤집을 수 있다 — 자동 판단은
+"기본값 제안"이지 강제가 아니다(Tier1 제외).
+"""
+
+import re
+import uuid
+
+from app import session_store
+from app.actions.masking import mask_value
+from app.actions.policy import POLICY
+from app.exaone_client import detect_llm
+from app.regex_engine import detect_regex
+from app.replace.replace_address import replace_address
+from app.replace.replace_bank_account import replace_account
+from app.replace.replace_email import replace_email
+from app.replace.replace_organization import replace_organization
+from app.replace.replace_phone import replace_phone
+from app.rewrite.action import decide_action
+from app.rewrite.entity_filter import is_valid_organization, is_valid_person_name
+from app.rewrite.llm_polish import polish_with_llm
+from app.rewrite.necessity import classify_necessity
+from app.rewrite.purpose import infer_purpose
+from app.rewrite.self_check import self_check_rewrite
+from app.schemas import AnalyzeResponse, Entity
+
+MAX_PROMPT_LENGTH = 50_000  # §5.5 ReDoS 방지 — 입력 길이 상한
+
+# §3.1 — type 문자열 → tier 매핑 (regex 탐지분)
+TIER1_TYPES = {"RRN", "PASSPORT", "DRIVER_LICENSE", "FOREIGNER_REGISTRATION"}
+# 나머지 regex 타입(PHONE, EMAIL, BANK_ACCOUNT, CARD, BUSINESS_NUMBER 등)은 Tier2
+
+# exaone_client.detect_llm()이 실제로 반환하는 카테고리 (§4.2 — life_context/question_essential
+# 구분은 아직 미구현이라, LLM 탐지분은 전부 Tier3로 취급한다)
+LLM_CATEGORIES = ("PERSON", "ADDRESS", "ORGANIZATION")
+
+# app.rewrite.action.decide_action()의 _JUDGE_BY_NECESSITY와 동일 — 이 타입들만
+# 목적 필요성 판단 대상이라, classify_necessity() 호출 여부를 이걸로 결정한다.
+# action.py 쪽 집합이 바뀌면 여기도 맞춰야 한다.
+_NECESSITY_JUDGED_TYPES = {"ADDRESS", "ORGANIZATION"}
+
+
+def _tier_of(entity_type: str, source: str) -> int:
+    if source == "regex":
+        return 1 if entity_type in TIER1_TYPES else 2
+    return 3
+
+
+def _mask_person(name: str) -> str:
+    """apply_policy.py::mask_person()과 동일 — 첫 글자만 남기고 나머지 마스킹."""
+    if len(name) <= 1:
+        return "*"
+    return name[0] + "*" * (len(name) - 1)
+
+
+def _replacement_for(entity_type: str, value: str) -> str:
+    """app.actions.apply_policy.apply_policy()와 동일한 POLICY를 항목 단위로 재사용."""
+    action = POLICY.get(entity_type, "mask")
+
+    if action == "mask":
+        if entity_type == "PERSON":
+            return _mask_person(value)
+        return mask_value(value, entity_type)
+
+    if action == "replace":
+        if entity_type == "PHONE":
+            return replace_phone(value)
+        if entity_type == "EMAIL":
+            return replace_email(value)
+        if entity_type == "BANK_ACCOUNT":
+            return replace_account(value)
+        if entity_type == "ADDRESS":
+            return replace_address(value)
+        if entity_type == "ORGANIZATION":
+            return replace_organization(value)
+        return "[REDACTED]"
+
+    return value
+
+
+def _find_all(text: str, value: str) -> list[tuple[int, int]]:
+    if not value:
+        return []
+    return [(m.start(), m.end()) for m in re.finditer(re.escape(value), text)]
+
+
+def _llm_items(prompt: str, llm_raw: dict) -> list[dict]:
+    """detect_llm() 출력을 원본 프롬프트 기준 오프셋으로 변환.
+    detect_llm()이 주는 start/end는 자신에게 입력된 텍스트(마스킹본) 기준이라
+    원본 프롬프트 좌표계와 달라서 쓰지 않고, 값(text)을 원본에서 재검색한다.
+    entity_filter로 직함·일반명사 오탐지(§2)를 걸러낸다."""
+    items = []
+    for category in LLM_CATEGORIES:
+        for entry in llm_raw.get(category, []):
+            value = entry.get("text", "")
+            if category == "PERSON" and not is_valid_person_name(value):
+                continue
+            if category == "ORGANIZATION" and not is_valid_organization(value):
+                continue
+            for start, end in _find_all(prompt, value):
+                items.append(
+                    {
+                        "type": category,
+                        "value": value,
+                        "start": start,
+                        "end": end,
+                        "tier": _tier_of(category, "eeve"),
+                    }
+                )
+    return items
+
+
+def _dedupe_overlaps(items: list[dict]) -> list[dict]:
+    """§3 ⑤ 통합 — 키 충돌(겹치는 span) 정리.
+
+    regex_engine.detect_regex()가 정규식 간 겹침은 이미 정리해서 주지만, regex
+    탐지분과 LLM 탐지분 사이에 겹치는 경우까지는 처리하지 않으므로 여기서 한 번
+    더 정리한다. 더 넓은 span을 우선하고, 넓이가 같으면 먼저 탐지된 항목을 우선한다.
+    """
+    ordered = sorted(items, key=lambda e: (e["start"], -(e["end"] - e["start"])))
+    accepted: list[dict] = []
+    for e in ordered:
+        if any(e["start"] < a["end"] and e["end"] > a["start"] for a in accepted):
+            continue
+        accepted.append(e)
+    return sorted(accepted, key=lambda e: e["start"])
+
+
+def _apply_replacements(
+    text: str, items: list[dict], custom_values: dict[str, str] | None = None
+) -> str:
+    """§4.4 — 오프셋 역순으로 치환.
+
+    custom_values가 있으면(Extension "직접 수정" 기능) 해당 항목은 POLICY 기반
+    기본 치환 대신 사용자가 입력한 값을 쓴다. 단 Tier1(고유식별정보)은 §5 불변조건상
+    사용자 결정과 무관하게 항상 강제 마스킹해야 하므로 custom_values를 무시한다.
+    """
+    custom_values = custom_values or {}
+    for e in sorted(items, key=lambda e: e["start"], reverse=True):
+        key = f"{e['type']}:{e['start']}:{e['end']}"
+        if e["tier"] != 1 and key in custom_values:
+            replacement = custom_values[key]
+        else:
+            replacement = _replacement_for(e["type"], e["value"])
+        text = text[: e["start"]] + replacement + text[e["end"] :]
+    return text
+
+
+def _assign_default_masked(items: list[dict], purpose_source_text: str) -> None:
+    """items 각 항목에 "default_masked"(체크박스 기본값)를 in-place로 채운다.
+
+    ADDRESS/ORGANIZATION만 목적 필요성을 판단한다 — 판단 대상이 없으면 목적
+    추론(infer_purpose)/필요성 분류(classify_necessity) 호출 자체를 건너뛴다
+    (불필요한 exaone3.5:7.8b 호출 방지). 나머지 타입은 decide_action()이 필요성과
+    무관하게 항상 같은 결과를 주므로 필요성 값은 그냥 False로 채워 넣는다.
+    """
+    judge_targets = [e for e in items if e["type"] in _NECESSITY_JUDGED_TYPES]
+
+    necessity_map: dict[str, bool] = {}
+    if judge_targets:
+        purpose = infer_purpose(purpose_source_text)
+        necessity_map = classify_necessity(
+            purpose, [{"type": e["type"], "value": e["value"]} for e in judge_targets]
+        )
+
+    for e in items:
+        necessary = necessity_map.get(e["value"], False)
+        action = decide_action(e["type"], necessary)
+        e["default_masked"] = action != "keep"
+
+
+def run_analysis(prompt: str) -> AnalyzeResponse:
+    if len(prompt) > MAX_PROMPT_LENGTH:
+        raise ValueError(f"prompt exceeds max length ({MAX_PROMPT_LENGTH})")
+
+    # ② Regex Detection (regex_engine이 자체적으로 겹침도 정리해서 반환)
+    regex_entities = detect_regex(prompt)
+    regex_items = [{**e, "tier": _tier_of(e["type"], "regex")} for e in regex_entities]
+
+    # ③ Masking — EEVE 입력은 반드시 마스킹본이어야 한다 (§5.1 불변조건)
+    regex_masked = _apply_replacements(prompt, regex_items) if regex_items else prompt
+
+    # ④ EEVE 1차 호출(탐색) — 실제 로컬 LLM 호출
+    # exaone_client.detect_llm()이 모델 출력 형식이 어긋나면(예: {"text":...} 대신
+    # 문자열만 반환) 크래시하는 경우가 실제로 있다 (약 1/3 빈도로 재현됨, 원인은
+    # exaone_client.py 쪽 — 우리 파일 아님). regex 탐지분만으로라도 /analyze가
+    # 죽지 않도록 방어한다.
+    try:
+        llm_raw = detect_llm(regex_masked)
+    except Exception:
+        llm_raw = {}
+    llm_items = _llm_items(prompt, llm_raw)
+
+    # ⑤ Detection Result 통합 (원본 오프셋 기준, 겹침 정리)
+    items = _dedupe_overlaps(regex_items + llm_items)
+
+    # 기본 정책 적용본 (POLICY 기준 mask/replace, 미리보기용 — LLM 재작성은 안 함)
+    final_masked = _apply_replacements(prompt, items)
+
+    # 체크박스 기본값 — ADDRESS/ORGANIZATION은 목적 필요성 판단, 나머지는 항상 마스킹
+    _assign_default_masked(items, final_masked)
+
+    entities = [
+        Entity(
+            type=e["type"],
+            value=e["value"],
+            start=e["start"],
+            end=e["end"],
+            tier=e["tier"],
+            default_masked=e["default_masked"],
+        )
+        for e in items
+    ]
+    # entities와 동일 index로 매칭되는 치환 미리보기 (Extension 협상 화면 "AI 제안")
+    candidates = [_replacement_for(e["type"], e["value"]) for e in items]
+
+    session_id = str(uuid.uuid4())
+    session_store.create(session_id, original=prompt, items=items)
+
+    return AnalyzeResponse(
+        session_id=session_id,
+        original=prompt,
+        masked=final_masked,
+        entities=entities,
+        candidates=candidates,
+    )
+
+
+_POLISH_TOKEN_FMT = "[[PGKEEP{}]]"
+
+
+def _final_value_for(entity: dict, protect_keys: set[str], custom_values: dict[str, str]) -> str:
+    """항목 하나의 "최종 확정 텍스트"(마스킹/치환/직접수정/원문유지)를 계산한다."""
+    key = f"{entity['type']}:{entity['start']}:{entity['end']}"
+    if key not in protect_keys:
+        return entity["value"]  # 원문 유지
+    if entity["tier"] != 1 and key in custom_values:
+        return custom_values[key]
+    return _replacement_for(entity["type"], entity["value"])
+
+
+def _build_polish_input(
+    original: str, items: list[dict], final_values: dict[str, str]
+) -> tuple[str, dict[str, str]]:
+    """polish_with_llm()에 보내기 전, 이미 확정된 값(마스킹/치환/직접수정/원문유지)이
+    LLM 다듬기 과정에서 임의로 바뀌거나 통째로 삭제되지 않도록 각 span을 플레이스홀더
+    토큰으로 감싼다.
+
+    llm_polish.SYSTEM_PROMPT는 orchestrator.py 흐름(고정 라벨 "(XX 비식별화)")을
+    다듬도록 쓰여 있어, pipeline.py가 만드는 실제 최종값(부분마스킹/자연어 치환/
+    사용자 직접입력/원문유지)과 형식이 다르다 — 실측 결과 LLM이 이런 값도 "안내
+    문구 관련 서술"로 오인해 문장째로 지워버리는 사례가 확인됐다(예: 이미 치환된
+    이메일 문장이 통째로 삭제됨). 이 라운드트립으로 LLM은 문장 흐름만 다듬고
+    확정된 값 자체는 건드릴 수 없게 한다.
+    """
+    ordered = sorted(items, key=lambda e: e["start"], reverse=True)
+    text = original
+    placeholders: dict[str, str] = {}
+    for i, e in enumerate(ordered):
+        key = f"{e['type']}:{e['start']}:{e['end']}"
+        token = _POLISH_TOKEN_FMT.format(i)
+        placeholders[token] = final_values[key]
+        text = text[: e["start"]] + token + text[e["end"] :]
+    return text, placeholders
+
+
+def _restore_polish_placeholders(text: str, placeholders: dict[str, str]) -> str:
+    for token, value in placeholders.items():
+        text = text.replace(token, value)
+    return text
+
+
+def _polish_once(polish_input: str, placeholders: dict[str, str]) -> tuple[str, bool]:
+    """polish_with_llm()을 한 번 호출하고, 다듬어진 결과에 모든 플레이스홀더
+    토큰이 그대로 남아있었는지(즉 확정값이 하나도 삭제/변형되지 않았는지) 함께
+    보고한다. llm_polish.SYSTEM_PROMPT에 토큰을 보존하라는 규칙(§13)을 추가했지만,
+    실측 결과 이 모델이 규칙을 어기고 특정 항목(예: 직함 앞 사람 이름)을 여전히
+    지우는 사례가 확인돼 — 이 확인 없이는 사용자 결정이 조용히 무시될 수 있다."""
+    raw = polish_with_llm(polish_input)
+    preserved = all(token in raw for token in placeholders)
+    return _restore_polish_placeholders(raw, placeholders), preserved
+
+
+def run_rewrite(
+    session_id: str,
+    decisions: dict[str, bool],
+    custom_values: dict[str, str] | None = None,
+) -> str:
+    """
+    ⑧ 재작성. decisions 키는 "TYPE:start:end" (Extension approval_sender.js와 동일 규약).
+    미언급 항목은 run_analysis()가 계산해둔 AI 기본 제안(entity.default_masked)을
+    따른다 — 사용자가 체크박스를 명시적으로 건드리지 않은 항목은 AI 판단이 곧
+    기본값이라는 뜻이다.
+
+    custom_values(선택, 같은 "TYPE:start:end" 키)가 있으면 그 항목은 POLICY 기반
+    기본 치환 대신 사용자가 직접 입력한 텍스트로 치환한다(Extension "직접 수정" 기능).
+    Tier1은 _final_value_for()가 custom_values를 무시하고 항상 강제 마스킹한다.
+
+    Tier1(고유식별정보)은 decisions에 뭐라고 오든 항상 보호한다 — Extension도
+    동일하게 강제하지만, 서버도 이중으로 강제한다 (§5 — 클라이언트만 신뢰하지 않는다).
+
+    각 항목의 최종 확정값을 먼저 계산해 플레이스홀더로 감싼 뒤 polish_with_llm()으로
+    문장을 다듬고, 다듬은 결과에서 플레이스홀더를 다시 확정값으로 복원한다 — 이렇게
+    해야 사용자의 직접수정/원문유지 결정이 polish 단계에서 지워지거나 바뀌지 않는다
+    (_build_polish_input 참고). 이후 self_check_rewrite()로 PII/잔류 라벨이 남았는지,
+    _polish_once()로 플레이스홀더가 다 살아있었는지(=확정값이 삭제되지 않았는지)
+    확인한다. 둘 중 하나라도 문제면 한 번만 재시도하고, 재시도 후에도 플레이스홀더가
+    빠졌으면(=polish가 확정값을 계속 지운다면) 안전하게 polish를 거치지 않은
+    (플레이스홀더만 복원한) 텍스트를 그대로 반환한다 — 문장이 덜 매끄럽더라도 사용자
+    결정이 조용히 사라지는 것보다는 낫다. 무한 재시도는 하지 않는다(§8 확정).
+    self_check 결과는 값이 아니라 타입별 개수만 담고 있어 로그로 남겨도 §5.2(PII
+    로그 금지)를 위반하지 않는다.
+    """
+    session = session_store.get(session_id)
+    if session is None:
+        raise KeyError(f"unknown or expired session_id: {session_id}")
+
+    items = session["items"]
+    custom_values = custom_values or {}
+
+    def _key(e: dict) -> str:
+        return f"{e['type']}:{e['start']}:{e['end']}"
+
+    to_protect = [
+        e for e in items if e["tier"] == 1 or decisions.get(_key(e), e["default_masked"])
+    ]
+    protect_keys = {_key(e) for e in to_protect}
+
+    final_values = {_key(e): _final_value_for(e, protect_keys, custom_values) for e in items}
+    polish_input, placeholders = _build_polish_input(session["original"], items, final_values)
+
+    rewritten, preserved = _polish_once(polish_input, placeholders)
+    if not preserved or self_check_rewrite(rewritten) is not None:
+        print(f"[PersonaGuard] polish issue detected (dropped entity or residual PII), retrying once (session={session_id})")
+        rewritten, preserved = _polish_once(polish_input, placeholders)
+
+    if not preserved:
+        print(f"[PersonaGuard] polish still dropping a confirmed entity after retry, falling back to unpolished text (session={session_id})")
+        rewritten = _restore_polish_placeholders(polish_input, placeholders)
+
+    return rewritten
