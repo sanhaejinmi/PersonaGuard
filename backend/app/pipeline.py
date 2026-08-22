@@ -258,6 +258,61 @@ def run_analysis(prompt: str) -> AnalyzeResponse:
     )
 
 
+_POLISH_TOKEN_FMT = "[[PGKEEP{}]]"
+
+
+def _final_value_for(entity: dict, protect_keys: set[str], custom_values: dict[str, str]) -> str:
+    """항목 하나의 "최종 확정 텍스트"(마스킹/치환/직접수정/원문유지)를 계산한다."""
+    key = f"{entity['type']}:{entity['start']}:{entity['end']}"
+    if key not in protect_keys:
+        return entity["value"]  # 원문 유지
+    if entity["tier"] != 1 and key in custom_values:
+        return custom_values[key]
+    return _replacement_for(entity["type"], entity["value"])
+
+
+def _build_polish_input(
+    original: str, items: list[dict], final_values: dict[str, str]
+) -> tuple[str, dict[str, str]]:
+    """polish_with_llm()에 보내기 전, 이미 확정된 값(마스킹/치환/직접수정/원문유지)이
+    LLM 다듬기 과정에서 임의로 바뀌거나 통째로 삭제되지 않도록 각 span을 플레이스홀더
+    토큰으로 감싼다.
+
+    llm_polish.SYSTEM_PROMPT는 orchestrator.py 흐름(고정 라벨 "(XX 비식별화)")을
+    다듬도록 쓰여 있어, pipeline.py가 만드는 실제 최종값(부분마스킹/자연어 치환/
+    사용자 직접입력/원문유지)과 형식이 다르다 — 실측 결과 LLM이 이런 값도 "안내
+    문구 관련 서술"로 오인해 문장째로 지워버리는 사례가 확인됐다(예: 이미 치환된
+    이메일 문장이 통째로 삭제됨). 이 라운드트립으로 LLM은 문장 흐름만 다듬고
+    확정된 값 자체는 건드릴 수 없게 한다.
+    """
+    ordered = sorted(items, key=lambda e: e["start"], reverse=True)
+    text = original
+    placeholders: dict[str, str] = {}
+    for i, e in enumerate(ordered):
+        key = f"{e['type']}:{e['start']}:{e['end']}"
+        token = _POLISH_TOKEN_FMT.format(i)
+        placeholders[token] = final_values[key]
+        text = text[: e["start"]] + token + text[e["end"] :]
+    return text, placeholders
+
+
+def _restore_polish_placeholders(text: str, placeholders: dict[str, str]) -> str:
+    for token, value in placeholders.items():
+        text = text.replace(token, value)
+    return text
+
+
+def _polish_once(polish_input: str, placeholders: dict[str, str]) -> tuple[str, bool]:
+    """polish_with_llm()을 한 번 호출하고, 다듬어진 결과에 모든 플레이스홀더
+    토큰이 그대로 남아있었는지(즉 확정값이 하나도 삭제/변형되지 않았는지) 함께
+    보고한다. llm_polish.SYSTEM_PROMPT에 토큰을 보존하라는 규칙(§13)을 추가했지만,
+    실측 결과 이 모델이 규칙을 어기고 특정 항목(예: 직함 앞 사람 이름)을 여전히
+    지우는 사례가 확인돼 — 이 확인 없이는 사용자 결정이 조용히 무시될 수 있다."""
+    raw = polish_with_llm(polish_input)
+    preserved = all(token in raw for token in placeholders)
+    return _restore_polish_placeholders(raw, placeholders), preserved
+
+
 def run_rewrite(
     session_id: str,
     decisions: dict[str, bool],
@@ -271,22 +326,29 @@ def run_rewrite(
 
     custom_values(선택, 같은 "TYPE:start:end" 키)가 있으면 그 항목은 POLICY 기반
     기본 치환 대신 사용자가 직접 입력한 텍스트로 치환한다(Extension "직접 수정" 기능).
-    Tier1은 _apply_replacements()가 custom_values를 무시하고 항상 강제 마스킹한다.
+    Tier1은 _final_value_for()가 custom_values를 무시하고 항상 강제 마스킹한다.
 
     Tier1(고유식별정보)은 decisions에 뭐라고 오든 항상 보호한다 — Extension도
     동일하게 강제하지만, 서버도 이중으로 강제한다 (§5 — 클라이언트만 신뢰하지 않는다).
 
-    확정 항목을 치환한 뒤 polish_with_llm()으로 자연스럽게 다듬고,
-    self_check_rewrite()로 PII/잔류 라벨이 남았는지 재확인한다. 남아있으면
-    한 번만 재시도하고, 그래도 남아있으면 그 결과를 그대로 반환한다 — 무한
-    재시도는 하지 않는다(§8 확정). self_check 결과는 값이 아니라 타입별 개수만
-    담고 있어 로그로 남겨도 §5.2(PII 로그 금지)를 위반하지 않는다.
+    각 항목의 최종 확정값을 먼저 계산해 플레이스홀더로 감싼 뒤 polish_with_llm()으로
+    문장을 다듬고, 다듬은 결과에서 플레이스홀더를 다시 확정값으로 복원한다 — 이렇게
+    해야 사용자의 직접수정/원문유지 결정이 polish 단계에서 지워지거나 바뀌지 않는다
+    (_build_polish_input 참고). 이후 self_check_rewrite()로 PII/잔류 라벨이 남았는지,
+    _polish_once()로 플레이스홀더가 다 살아있었는지(=확정값이 삭제되지 않았는지)
+    확인한다. 둘 중 하나라도 문제면 한 번만 재시도하고, 재시도 후에도 플레이스홀더가
+    빠졌으면(=polish가 확정값을 계속 지운다면) 안전하게 polish를 거치지 않은
+    (플레이스홀더만 복원한) 텍스트를 그대로 반환한다 — 문장이 덜 매끄럽더라도 사용자
+    결정이 조용히 사라지는 것보다는 낫다. 무한 재시도는 하지 않는다(§8 확정).
+    self_check 결과는 값이 아니라 타입별 개수만 담고 있어 로그로 남겨도 §5.2(PII
+    로그 금지)를 위반하지 않는다.
     """
     session = session_store.get(session_id)
     if session is None:
         raise KeyError(f"unknown or expired session_id: {session_id}")
 
     items = session["items"]
+    custom_values = custom_values or {}
 
     def _key(e: dict) -> str:
         return f"{e['type']}:{e['start']}:{e['end']}"
@@ -294,12 +356,18 @@ def run_rewrite(
     to_protect = [
         e for e in items if e["tier"] == 1 or decisions.get(_key(e), e["default_masked"])
     ]
+    protect_keys = {_key(e) for e in to_protect}
 
-    masked_text = _apply_replacements(session["original"], to_protect, custom_values)
+    final_values = {_key(e): _final_value_for(e, protect_keys, custom_values) for e in items}
+    polish_input, placeholders = _build_polish_input(session["original"], items, final_values)
 
-    rewritten = polish_with_llm(masked_text)
-    if self_check_rewrite(rewritten) is not None:
-        print(f"[PersonaGuard] self-check flagged residual PII, retrying once (session={session_id})")
-        rewritten = polish_with_llm(masked_text)
+    rewritten, preserved = _polish_once(polish_input, placeholders)
+    if not preserved or self_check_rewrite(rewritten) is not None:
+        print(f"[PersonaGuard] polish issue detected (dropped entity or residual PII), retrying once (session={session_id})")
+        rewritten, preserved = _polish_once(polish_input, placeholders)
+
+    if not preserved:
+        print(f"[PersonaGuard] polish still dropping a confirmed entity after retry, falling back to unpolished text (session={session_id})")
+        rewritten = _restore_polish_placeholders(polish_input, placeholders)
 
     return rewritten
