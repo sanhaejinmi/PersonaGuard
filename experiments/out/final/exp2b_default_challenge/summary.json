@@ -1,0 +1,11 @@
+{
+  "challenge": {
+    "mode": "2-B",
+    "n_cases": 100,
+    "leakage_rate": 0.2138,
+    "over_masking_rate": 0.0,
+    "action_accuracy": 0.8026,
+    "format_accuracy": null,
+    "consistency_violation_count": 0
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "rows": 100,
+  "detector": "personaguard",
+  "iou_threshold": 0.5,
+  "error_count": 0,
+  "summary": [
+    {
+      "scope": "all_gold_pii",
+      "tp": 180,
+      "fp": 10,
+      "fn": 48,
+      "precision": 0.9474,
+      "recall": 0.7895,
+      "f1": 0.8612
+    },
+    {
+      "scope": "personaguard_supported_gold_only",
+      "tp": 180,
+      "fp": 10,
+      "fn": 2,
+      "precision": 0.9474,
+      "recall": 0.989,
+      "f1": 0.9677
+    },
+    {
+      "scope": "synthetic_injected_region_only",
+      "tp": 176,
+      "fp": 0,
+      "fn": 47,
+      "precision": 1.0,
+      "recall": 0.7892,
+      "f1": 0.8822
+    }
+  ],
+  "unsupported_gold_counts": {
+    "CV_POSITION": 6,
+    "DT_BIRTH": 14,
+    "FD_MAJOR": 4,
+    "PS_ID": 10,
+    "QT_AGE": 8,
+    "QT_PLATE_NUMBER": 2,
+    "TM_BLOOD_TYPE": 2
+  },
+  "evaluation_policy": {
+    "all_gold_pii": "All annotated PII; any unmatched prediction anywhere is FP.",
+    "personaguard_supported_gold_only": "Unsupported gold labels are excluded from FN only.",
+    "synthetic_injected_region_only": "Primary PersonaGuard-v1 metric. Scores annotated synthetic PII and unmatched predictions before seed_prompt; detections inside the original seed context are reported separately and are not counted as injected-region FP."
+  },
+  "input": "C:\\Users\\jej96\\Desktop\\PersonaGuard-develop\\experiments\\data\\PersonaGuard_dev_v1_improved.csv",
+  "run_at_utc": "2026-08-13T20:33:16.165879+00:00",
+  "python": "3.14.5",
+  "git_commit": "unknown",
+  "detector_reproducibility": {
+    "ollama_model": "exaone3.5:2.4b",
+    "temperature": 0,
+    "seed": 42
+  },
+  "notes": "Primary dataset metric is synthetic_injected_region_only; strict full-prompt metrics remain for safety auditing."
+}
