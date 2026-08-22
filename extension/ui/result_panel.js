@@ -447,9 +447,19 @@ function renderCustomRewrite(){
 
 /* ===== 화면: 재작성 로딩 ===== */
 
+// mask/keep/custom 세 가지 모드별 건수 집계 — state.choices(boolean)만 보면
+// "직접 수정" 항목도 전부 마스킹으로 잡혀버려서 entityMode를 기준으로 센다.
+function getModeCounts(){
+  const counts = { mask: 0, keep: 0, custom: 0 };
+  getEntities().forEach((e, idx) => {
+    const mode = state.entityMode[String(idx)] ?? (state.choices[String(idx)] ? 'mask' : 'keep');
+    counts[mode] = (counts[mode] ?? 0) + 1;
+  });
+  return counts;
+}
+
 function renderRewriteLoading(){
-  const maskedCount = getEntities().filter((e, idx) => state.choices[String(idx)]).length;
-  const keptCount = getEntities().length - maskedCount;
+  const { mask: maskedCount, keep: keptCount, custom: customCount } = getModeCounts();
 
   return `
     <div class="section" style="text-align:center;padding:48px 16px;">
@@ -457,7 +467,7 @@ function renderRewriteLoading(){
         <div class="spinner-circle"></div>
       </div>
       <p class="loading-title">프롬프트를 안전하게 재작성하고 있어요</p>
-      <p class="loading-desc">마스킹 ${maskedCount}건 · 원본유지 ${keptCount}건이 적용됩니다</p>
+      <p class="loading-desc">마스킹 ${maskedCount}건 · 직접수정 ${customCount}건 · 원본유지 ${keptCount}건이 적용됩니다</p>
     </div>
   `;
 }
