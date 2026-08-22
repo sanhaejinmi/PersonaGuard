@@ -1,0 +1,3 @@
+﻿split,entity_type,gold_action,expected_policy_action,personaguard_policy_action,count
+challenge,ADDRESS,delete,mask,replace,27
+challenge,ORGANIZATION,delete,mask,replace,33
