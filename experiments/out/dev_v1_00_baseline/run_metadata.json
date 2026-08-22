@@ -1,0 +1,40 @@
+{
+  "rows": 100,
+  "detector": "personaguard",
+  "iou_threshold": 0.5,
+  "error_count": 0,
+  "summary": [
+    {
+      "scope": "all_gold_pii",
+      "tp": 151,
+      "fp": 30,
+      "fn": 77,
+      "precision": 0.8343,
+      "recall": 0.6623,
+      "f1": 0.7384
+    },
+    {
+      "scope": "personaguard_supported_gold_only",
+      "tp": 151,
+      "fp": 30,
+      "fn": 31,
+      "precision": 0.8343,
+      "recall": 0.8297,
+      "f1": 0.832
+    }
+  ],
+  "unsupported_gold_counts": {
+    "CV_POSITION": 6,
+    "DT_BIRTH": 14,
+    "FD_MAJOR": 4,
+    "PS_ID": 10,
+    "QT_AGE": 8,
+    "QT_PLATE_NUMBER": 2,
+    "TM_BLOOD_TYPE": 2
+  },
+  "input": "C:\\Users\\jej96\\Desktop\\PersonaGuard\\PersonaGuard-develop\\experiments\\data\\PersonaGuard_dev_v1_reviewed.csv",
+  "run_at_utc": "2026-08-12T11:36:02.306932+00:00",
+  "python": "3.14.5",
+  "git_commit": "8b1b986c6d7371fa24faceef8ec15d27095eb9ec",
+  "notes": "personaguard mode requires the local Ollama exaone3.5:2.4b model for PERSON/ADDRESS/ORGANIZATION detection"
+}

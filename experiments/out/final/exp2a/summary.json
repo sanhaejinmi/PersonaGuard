@@ -1,0 +1,38 @@
+{
+  "dev": {
+    "mode": "2-A",
+    "n_cases": 101,
+    "leakage_rate": 0.0,
+    "over_masking_rate": 0.0,
+    "action_accuracy": 0.8681,
+    "format_accuracy": 1.0,
+    "consistency_violation_count": 0
+  },
+  "val": {
+    "mode": "2-A",
+    "n_cases": 50,
+    "leakage_rate": 0.0,
+    "over_masking_rate": 0.0,
+    "action_accuracy": 0.8791,
+    "format_accuracy": 1.0,
+    "consistency_violation_count": 0
+  },
+  "test": {
+    "mode": "2-A",
+    "n_cases": 750,
+    "leakage_rate": 0.0032,
+    "over_masking_rate": 0.0,
+    "action_accuracy": 0.7687,
+    "format_accuracy": 1.0,
+    "consistency_violation_count": 3
+  },
+  "challenge": {
+    "mode": "2-A",
+    "n_cases": 100,
+    "leakage_rate": 0.0395,
+    "over_masking_rate": 0.0,
+    "action_accuracy": 0.8026,
+    "format_accuracy": 0.8363,
+    "consistency_violation_count": 0
+  }
+}
